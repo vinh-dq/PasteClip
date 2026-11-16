@@ -168,6 +168,8 @@ final class ShelfController {
 
     /// Returns true when the key was handled and shouldn't reach the focused text field.
     private func handle(_ event: NSEvent) -> Bool {
+        // Renaming a card: every key goes to its title field (Return saves, Esc cancels).
+        if state.renamingID != nil { return false }
         if state.composing {
             if event.keyCode == 53 { state.closePreview(); return true } // Esc
             return false

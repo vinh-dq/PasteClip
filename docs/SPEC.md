@@ -73,6 +73,7 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | 6.6 | Closes on Esc, a click outside, or after pasting (the preview popup closes with it) | ✅ |
 | 6.7 | Keyboard: ←/→ select, ⌘→/⌘← next/previous pinboard, Return paste, ⇧Return paste as plain text, ⌘1–⌘9 quick paste, ⌘N new text item, Space or ⌘Y preview, ⌘E edit, ⌘P pin, ⌘C copy only, ⌘⌫ delete, Tab next tab, ⌘F search, ⌘, settings | ✅ |
 | 6.7a | Mouse: a click selects the card immediately; a double-click pastes it into the front app (holding the plain-text modifier, ⇧ by default, pastes plain text). Clicks never scroll the row; keyboard moves do. Dragging a card onto a pinboard tab files it there, onto History takes it off its pinboard, and into another app drops its content | ✅ |
+| 6.7b | Double-clicking a card's header edits its title in place: Return or clicking elsewhere saves, Esc cancels, an empty title goes back to the clip kind. Double-clicking the rest of the card pastes. Also in the right-click menu as Rename… | ✅ |
 | 6.8 | Right-click menu: Paste, Paste as Plain Text, Copy, Preview, Edit…, Pin, Pinboard ▸, Add to / Remove from Paste Stack, Delete | ✅ |
 
 ## 7. Preview and editing

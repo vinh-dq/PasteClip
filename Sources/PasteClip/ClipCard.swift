@@ -13,14 +13,18 @@ struct ClipCard: View, Equatable {
     let inStack: Bool
     let showLinkPreview: Bool
     let quickPasteSymbol: String
+    var renaming = false
+    var onEndRenaming: () -> Void = {}
     @ObservedObject var links = LinkPreviews.shared
     @ObservedObject var thumbnails = FileThumbnails.shared
 
     private static let size = CGSize(width: 236, height: 236)
+    static let headerHeight: CGFloat = 50
 
     static func == (a: ClipCard, b: ClipCard) -> Bool {
         a.item == b.item && a.index == b.index && a.board == b.board && a.inStack == b.inStack
             && a.showLinkPreview == b.showLinkPreview && a.quickPasteSymbol == b.quickPasteSymbol
+            && a.renaming == b.renaming
     }
 
     var body: some View {
@@ -65,9 +69,13 @@ struct ClipCard: View, Equatable {
         return HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
-                    Text(item.title ?? kindLabel)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
+                    if renaming {
+                        TitleField(item: item, store: store, placeholder: kindLabel, onEnd: onEndRenaming)
+                    } else {
+                        Text(item.title ?? kindLabel)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                    }
                     if item.pinned { Image(systemName: "pin.fill").font(.system(size: 9)) }
                     if inStack { Image(systemName: "square.stack.3d.up.fill").font(.system(size: 9)) }
                 }
@@ -81,7 +89,7 @@ struct ClipCard: View, Equatable {
         .foregroundStyle(.white)
         .padding(.leading, 12)
         .padding(.trailing, 8)
-        .frame(height: 50)
+        .frame(height: Self.headerHeight)
         .background(
             ZStack {
                 LinearGradient(colors: [tint, tint.deeper],
@@ -224,6 +232,48 @@ struct ClipCard: View, Equatable {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
+    }
+}
+
+/// Edits a clip's title in its card header. Return or clicking elsewhere saves; Esc cancels;
+/// an empty title goes back to the clip kind.
+private struct TitleField: View {
+    let item: ClipItem
+    let store: ClipStore
+    let placeholder: String
+    let onEnd: () -> Void
+    @StateObject private var draft: ViewState<String>
+    @StateObject private var done = ViewState(false)
+    @FocusState private var focused: Bool
+
+    init(item: ClipItem, store: ClipStore, placeholder: String, onEnd: @escaping () -> Void) {
+        self.item = item
+        self.store = store
+        self.placeholder = placeholder
+        self.onEnd = onEnd
+        _draft = StateObject(wrappedValue: ViewState(item.title ?? ""))
+    }
+
+    var body: some View {
+        TextField(placeholder, text: $draft.value)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 5).fill(.white.opacity(0.22)))
+            .focused($focused)
+            .onAppear { DispatchQueue.main.async { focused = true } }
+            .onSubmit { finish(save: true) }
+            .onExitCommand { finish(save: false) }
+            .onChange(of: focused) { _, isFocused in if !isFocused { finish(save: true) } }
+            .onDisappear { finish(save: true) }
+    }
+
+    private func finish(save: Bool) {
+        guard !done.value else { return }
+        done.value = true
+        if save, draft.value != (item.title ?? "") { store.setTitle(item, draft.value) }
+        onEnd()
     }
 }
 

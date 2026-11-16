@@ -46,7 +46,9 @@ struct CardsRow: View {
                         board: item.pinboardID.flatMap(store.pinboard(withID:)),
                         inStack: stack.contains(item.id),
                         showLinkPreview: settings.linkPreviews,
-                        quickPasteSymbol: settings.quickPasteModifier.symbol)
+                        quickPasteSymbol: settings.quickPasteModifier.symbol,
+                        renaming: state.renamingID == item.id,
+                        onEndRenaming: { if state.renamingID == item.id { state.renamingID = nil } })
             .equatable()
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -61,9 +63,14 @@ struct CardsRow: View {
             .onDrag { ClipDrag.provider(for: item, store: store) }
             // A single click selects at once; the double-click is recognised alongside it
             // instead of making every click wait to see whether a second one follows.
+            // Double-clicking the header renames the clip; anywhere else pastes it.
             .gesture(TapGesture().onEnded { state.click(index) })
-            .simultaneousGesture(TapGesture(count: 2).onEnded {
-                state.onPaste(item, Self.isHeld(settings.plainTextModifier))
+            .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { tap in
+                if tap.location.y < ClipCard.headerHeight {
+                    state.startRenaming(index)
+                } else {
+                    state.onPaste(item, Self.isHeld(settings.plainTextModifier))
+                }
             })
             .contextMenu { menu(for: item, index: index) }
     }
@@ -110,6 +117,7 @@ struct CardsRow: View {
                 state.editing = true
             }
         }
+        Button("Rename…") { state.startRenaming(index) }
         Divider()
         Button(item.pinned ? "Unpin" : "Pin") { store.togglePin(item) }
         Menu("Pinboard") {

@@ -89,6 +89,7 @@ All three can be changed or removed in Settings → Shortcuts.
 |---|---|
 | ← → | Select a card |
 | Return / double-click | Paste into the app you were using (hold ⇧ for plain text) |
+| Double-click a card's title | Rename the clip (Return saves, Esc cancels, empty resets) |
 | ⌘1…⌘9 | Paste a card quickly |
 | Space / ⌘Y | Preview in a popup above the card; ← → move it to the next clip (Space works when the search field is empty) |
 | ⌘E | Edit a text clip (⌘S saves, Esc cancels) |

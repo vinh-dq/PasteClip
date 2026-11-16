@@ -39,6 +39,8 @@ final class ShelfState: ObservableObject {
     @Published var composing = false
     /// A text field inside the preview or composer has focus, so typing should reach it.
     @Published var textInputActive = false
+    /// The clip whose title is being edited on its card. Keys go to the title field meanwhile.
+    @Published var renamingID: UUID?
     /// Clips matching the query. Recomputed only when the clips or the query change.
     @Published private(set) var visible: [ClipItem] = []
     /// Apps that clips came from, sorted by name.
@@ -93,6 +95,15 @@ final class ShelfState: ObservableObject {
         // Assigning a @Published value notifies even when it doesn't change, which would
         // redraw the whole shelf on every click.
         if editing { editing = false }
+        if renamingID != nil, renamingID != visible[safe: index]?.id { renamingID = nil }
+    }
+
+    /// Edits the title on the card itself.
+    func startRenaming(_ index: Int) {
+        guard let item = visible[safe: index] else { return }
+        if previewing { closePreview() }
+        selectionModel.select(index, scroll: false)
+        renamingID = item.id
     }
 
     /// Steps through History and each pinboard.
@@ -124,6 +135,7 @@ final class ShelfState: ObservableObject {
         editing = false
         composing = false
         textInputActive = false
+        renamingID = nil
         focusToken = UUID()
     }
 
@@ -438,4 +450,8 @@ struct VisualEffect: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
     }
+}
+
+extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
