@@ -429,7 +429,7 @@ extension Color {
 
 /// Dragging a card: other apps get the clip's content, PasteClip's pinboard tabs get its id.
 enum ClipDrag {
-    static let type = UTType(exportedAs: "io.github.vinhquang3004.pasteclip.clip")
+    static let type = UTType(exportedAs: "io.github.vinh-dq.pasteclip.clip")
 
     /// The clip's id comes first, for dropping on a pinboard tab, then its content for other apps.
     /// Built by hand: `NSItemProvider(contentsOf:)` turns the drag into a plain file drag, which

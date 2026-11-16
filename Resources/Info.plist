@@ -9,15 +9,15 @@
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.vinhquang3004.pasteclip</string>
+	<string>io.github.vinh-dq.pasteclip</string>
 	<key>CFBundleName</key>
 	<string>PasteClip</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1.1</string>
+	<string>1.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -34,7 +34,7 @@
 			<key>UTTypeDescription</key>
 			<string>PasteClip clip</string>
 			<key>UTTypeIdentifier</key>
-			<string>io.github.vinhquang3004.pasteclip.clip</string>
+			<string>io.github.vinh-dq.pasteclip.clip</string>
 		</dict>
 	</array>
 </dict>

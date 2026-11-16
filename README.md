@@ -9,7 +9,7 @@ one shortcut: press **⇧⌘V**, pick a card, and it is pasted into the app you 
 
 ## Install
 
-1. Download **`PasteClip-<version>.dmg`** from the [latest release](https://github.com/vinhquang3004/PasteClip/releases/latest).
+1. Download **`PasteClip-<version>.dmg`** from the [latest release](https://github.com/vinh-dq/PasteClip/releases/latest).
 2. Open it and drag **PasteClip** into **Applications**.
 3. Open PasteClip from Applications. It runs in the menu bar (there is no Dock icon).
 
@@ -34,7 +34,9 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 ### Update and uninstall
 
 - **Update:** quit PasteClip from the menu bar, then replace it in Applications with the new version.
-  Your history and pinboards are kept.
+  Your history and pinboards are kept. Coming from 1.1.x or earlier, macOS asks for
+  Accessibility again once (the app's identifier changed in 1.2.0); remove the old PasteClip
+  entry in System Settings › Privacy & Security › Accessibility and turn on the new one.
 - **Uninstall:** quit PasteClip, move it to the Trash, and delete
   `~/Library/Application Support/PasteClip` to remove your history.
 
@@ -71,7 +73,7 @@ Run `./scripts/make-signing-cert.sh` once before building. It creates a self-sig
 "PasteClip Local Signing" certificate in your login keychain, and `bundle.sh` signs with it, so
 every build has the same identity and macOS keeps the Accessibility permission. Without it the
 app is signed ad hoc, macOS treats each rebuild as a new app, and asks for permission again
-(`tccutil reset Accessibility io.github.vinhquang3004.pasteclip` clears the stale entries).
+(`tccutil reset Accessibility io.github.vinh-dq.pasteclip` clears the stale entries).
 
 ## Global shortcuts
 
@@ -109,7 +111,7 @@ Right-click a card to add it to a pinboard or the paste stack. Right-click a pin
 Sync uses CloudKit, which only works in an app signed by an Apple Developer team. Ad-hoc
 builds hide the option. To build a copy that can sync:
 
-1. In the Apple Developer site, register the App ID `io.github.vinhquang3004.pasteclip` (or change
+1. In the Apple Developer site, register the App ID `io.github.vinh-dq.pasteclip` (or change
    `CFBundleIdentifier` in `Resources/Info.plist`) with iCloud (CloudKit) enabled, and create
    the container `iCloud.<bundle id>`.
 2. Create a Developer ID provisioning profile for that App ID and download it.
