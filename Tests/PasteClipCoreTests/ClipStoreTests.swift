@@ -161,6 +161,192 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
     #expect(!FileManager.default.fileExists(atPath: richURL.path))
 }
 
+private func linked(_ label: String, to url: String) -> NSAttributedString {
+    let text = NSMutableAttributedString(string: "Read \(label) now")
+    text.addAttribute(.link, value: URL(string: url)!, range: NSRange(location: 5, length: label.count))
+    text.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: 13), range: NSRange(location: 0, length: 4))
+    return text
+}
+
+private func hasLink(_ data: Data?, to url: String) -> Bool {
+    guard let data, let text = NSAttributedString(rtf: data, documentAttributes: nil) else { return false }
+    var found = false
+    text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+        if (value as? URL)?.absoluteString == url || value as? String == url { found = true }
+    }
+    return found
+}
+
+@Test func pastesFormattingAsBothRTFAndHTML() throws {
+    let (store, pb, _) = makeStore()
+    let rtf = try #require(ClipStore.rtf(of: linked("docs", to: "https://swift.org/")))
+    pb.clearContents()
+    pb.setString("Read docs now", forType: .string)
+    pb.setData(rtf, forType: .rtf)
+    store.poll()
+
+    store.copyToPasteboard(try #require(store.items.first))
+    #expect(pb.data(forType: .rtf) == rtf)
+    let html = String(decoding: try #require(pb.data(forType: .html)), as: UTF8.self)
+    #expect(html.contains("href=\"https://swift.org/\""))
+}
+
+@Test func keepsFormattingFromRTFDAndFormattedOnlyCopies() throws {
+    let (store, pb, _) = makeStore()
+    let text = linked("notes", to: "https://example.com/")
+    let rtfd = try #require(text.rtfd(from: NSRange(location: 0, length: text.length), documentAttributes: [:]))
+    pb.clearContents()
+    pb.setString(text.string, forType: .string)
+    pb.setData(rtfd, forType: .rtfd)
+    store.poll()
+    let fromRTFD = try #require(store.items.first)
+    #expect(fromRTFD.richType == "rtf")
+    #expect(hasLink(store.richData(for: fromRTFD)?.0, to: "https://example.com/"))
+
+    // No plain text on the pasteboard at all: the text is read from the formatting.
+    pb.clearContents()
+    pb.setData(ClipStore.rtf(of: linked("site", to: "https://swift.org/")), forType: .rtf)
+    store.poll()
+    let formattedOnly = try #require(store.items.first)
+    #expect(formattedOnly.text == "Read site now")
+    #expect(formattedOnly.richType == "rtf")
+}
+
+@Test func linkClipsKeepTheirFormatting() throws {
+    let (store, pb, _) = makeStore()
+    pb.clearContents()
+    pb.setString("https://swift.org", forType: .string)
+    pb.setData(Data("<a href=\"https://swift.org\">https://swift.org</a>".utf8), forType: .html)
+    store.poll()
+    let item = try #require(store.items.first)
+    #expect(item.kind == .link)
+    #expect(item.richType == "html")
+}
+
+@Test func editingFormattedTextKeepsFormattingAndBoard() throws {
+    let (store, pb, _) = makeStore()
+    let board = store.createPinboard(name: "Work", colorIndex: 0)
+    pb.clearContents()
+    pb.setString("hello", forType: .string)
+    pb.setData(Data("<b>hello</b>".utf8), forType: .html)
+    store.poll()
+    let item = try #require(store.items.first)
+    store.setPinboard(item, board)
+    let oldURL = try #require(store.richURL(for: item))
+
+    store.updateText(item, linked("guide", to: "https://swift.org/"))
+    let edited = try #require(store.item(withID: item.id))
+    #expect(edited.text == "Read guide now")
+    #expect(edited.richType == "rtf")
+    #expect(edited.pinboardID == board.id)
+    #expect(hasLink(store.richData(for: edited)?.0, to: "https://swift.org/"))
+    #expect(!FileManager.default.fileExists(atPath: oldURL.path))
+
+    // Changing only the formatting writes a new file, so cached previews update.
+    store.updateText(edited, NSAttributedString(string: "Read guide now"))
+    #expect(store.item(withID: item.id)?.richFile != edited.richFile)
+}
+
+@Test func keepsAppSpecificFormatsAndRestoresThem() throws {
+    let (store, pb, _) = makeStore()
+    let custom = NSPasteboard.PasteboardType("org.chromium.web-custom-data")
+    let blob = Data("mentions".utf8)
+    pb.clearContents()
+    pb.declareTypes([.string, custom], owner: nil)
+    pb.setString("@team please review", forType: .string)
+    pb.setData(blob, forType: custom)
+    store.poll()
+    let item = try #require(store.items.first)
+    #expect(item.hasFormatting)
+    #expect(item.richFile == nil)
+
+    store.copyToPasteboard(item)
+    #expect(pb.data(forType: custom) == blob)
+    #expect(pb.string(forType: .string) == "@team please review")
+
+    store.copyToPasteboard(item, plainText: true)
+    #expect(pb.data(forType: custom) == nil)
+
+    // Copying the same text plainly keeps the formats; editing the text drops them.
+    pb.clearContents()
+    pb.setString("@team please review", forType: .string)
+    store.poll()
+    #expect(store.items.first?.pasteboardFile == item.pasteboardFile)
+    store.updateText(item, "@team please check")
+    #expect(store.item(withID: item.id)?.hasFormatting == false)
+}
+
+@Test func plainAndRTFOnlyCopiesStoreNoExtraFormats() throws {
+    let (store, pb, _) = makeStore()
+    pb.clearContents()
+    pb.setString("plain", forType: .string)
+    pb.setData(ClipStore.rtf(of: NSAttributedString(string: "plain")), forType: .rtf)
+    store.poll()
+    #expect(store.items.first?.pasteboardFile == nil)
+}
+
+private let slackDelta = #"{"ops":[{"attributes":{"slackmention":{"id":"U1","label":"@An"}},"insert":"@An"},"#
+    + #"{"insert":" please "},{"attributes":{"bold":true},"insert":"review"},{"insert":" the "},"#
+    + #"{"attributes":{"link":"https://swift.org/"},"insert":"doc"},{"insert":"\n"}]}"#
+
+private func slackCustomData(_ delta: String, plain: String) -> Data {
+    ChromiumCustomData.encode([("public.utf8-plain-text", plain), ("slack/texty", delta)])
+}
+
+private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
+    let data = try #require(contents?.first?["org.chromium.web-custom-data"])
+    let delta = try #require(ChromiumCustomData.decode(data)?.first { $0.key == "slack/texty" }?.value)
+    let root = try #require(try JSONSerialization.jsonObject(with: Data(delta.utf8)) as? [String: Any])
+    return try #require(root["ops"] as? [[String: Any]])
+}
+
+@Test func chromiumCustomDataRoundTrips() throws {
+    let data = slackCustomData(slackDelta, plain: "@An please review the doc\n")
+    let pairs = try #require(ChromiumCustomData.decode(data))
+    #expect(pairs.map(\.key) == ["public.utf8-plain-text", "slack/texty"])
+    #expect(ChromiumCustomData.encode(pairs) == data)
+}
+
+@Test func editingSlackTextKeepsMentionsBoldAndLinks() throws {
+    let (store, pb, _) = makeStore()
+    let custom = NSPasteboard.PasteboardType("org.chromium.web-custom-data")
+    pb.clearContents()
+    pb.declareTypes([.string, custom], owner: nil)
+    pb.setString("@An please review the doc\n", forType: .string)
+    pb.setData(slackCustomData(slackDelta, plain: "@An please review the doc\n"), forType: custom)
+    store.poll()
+    let item = try #require(store.items.first)
+    // Kept as RTF too, for apps other than Slack.
+    #expect(item.richType == "rtf")
+
+    let shown = try #require(store.formattedText(for: item))
+    #expect(shown.string == "@An please review the doc\n")
+    #expect(shown.attribute(.slackMention, at: 0, effectiveRange: nil) != nil)
+
+    // Change "review" to "check", as the editor would.
+    let edited = NSMutableAttributedString(attributedString: shown)
+    let range = (edited.string as NSString).range(of: "review")
+    edited.replaceCharacters(in: range, with: "check")
+    edited.insert(NSAttributedString(string: "!"), at: 3)
+    store.updateText(item, edited)
+
+    let saved = try #require(store.item(withID: item.id))
+    #expect(saved.text == "@An! please check the doc\n")
+    let newOps = try ops(in: store.pasteboardContents(for: saved))
+    let mention = try #require(newOps.first)
+    #expect(mention["insert"] as? String == "@An")
+    #expect((mention["attributes"] as? [String: Any])?["slackmention"] != nil)
+    #expect(newOps.contains { $0["insert"] as? String == "check" && ($0["attributes"] as? [String: Any])?["bold"] as? Bool == true })
+    #expect(newOps.contains { ($0["attributes"] as? [String: Any])?["link"] as? String == "https://swift.org/" })
+    #expect(!newOps.contains { ($0["insert"] as? String)?.hasPrefix("!") == true && $0["attributes"] != nil })
+    #expect(hasLink(store.richData(for: saved)?.0, to: "https://swift.org/"))
+
+    store.copyToPasteboard(saved)
+    #expect(pb.string(forType: .string) == "@An! please check the doc\n")
+    #expect(pb.data(forType: custom) != nil)
+    #expect(pb.data(forType: .html) != nil)
+}
+
 // MARK: - Pinboards
 
 @Test func pinboardClipsSurviveTrimAndClear() {

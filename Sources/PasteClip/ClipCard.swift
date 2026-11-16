@@ -228,7 +228,7 @@ struct ClipCard: View, Equatable {
 
     private var footer: some View {
         HStack(spacing: 4) {
-            if item.richFile != nil {
+            if item.hasFormatting {
                 Image(systemName: "textformat").help("Keeps formatting")
             }
             if item.kind != .image, !(item.kind == .file && hasThumbnail) { Text(item.summary).lineLimit(1) }
@@ -463,6 +463,15 @@ enum ClipDrag {
         switch item.kind {
         case .text, .link, .color:
             provider.registerObject((item.text ?? "") as NSString, visibility: .all)
+            // Formatting too, for apps that take it; the rest use the plain text. Read only when
+            // asked for, so starting a drag stays quick.
+            let types: [NSPasteboard.PasteboardType] = item.richType == "rtf" ? [.rtf, .html] : item.richType == "html" ? [.html] : []
+            for type in types {
+                provider.registerDataRepresentation(forTypeIdentifier: type.rawValue, visibility: .all) { done in
+                    done(store.richRepresentations(for: item)[type], nil)
+                    return nil
+                }
+            }
         case .image:
             if let url = store.imageURL(for: item) { registerFile(url, as: .png, on: provider) }
         case .file:

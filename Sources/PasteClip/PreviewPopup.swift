@@ -189,6 +189,8 @@ private struct PreviewCard: View {
     @FocusState private var focus: Field?
     @StateObject private var titleDraft = ViewState("")
     @StateObject private var textDraft = ViewState("")
+    /// The edited formatted text, set once it changes. Not published: only saving reads it.
+    @StateObject private var richDraft = RichDraft()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -204,12 +206,16 @@ private struct PreviewCard: View {
             textDraft.value = item.text ?? ""
             if state.editing {
                 focus = .body
+                state.textInputActive = true
                 state.commitEdit = saveText
             }
         }
         .onChange(of: state.editing) { _, editing in
+            // The formatted editor is an AppKit view outside SwiftUI focus, so editing counts as typing throughout.
+            state.textInputActive = editing || focus != nil
             if editing {
                 textDraft.value = item.text ?? ""
+                richDraft.text = nil
                 focus = .body
                 state.commitEdit = saveText
             } else {
@@ -223,7 +229,7 @@ private struct PreviewCard: View {
             if focus != .title { titleDraft.value = title ?? "" }
         }
         .onChange(of: focus) { _, field in
-            state.textInputActive = field != nil
+            state.textInputActive = field != nil || state.editing
             if field != .title { commitTitle() }
         }
         .onDisappear {
@@ -234,7 +240,12 @@ private struct PreviewCard: View {
 
     /// Saves the edited text, if it changed. Kept in `state.commitEdit` while editing.
     private func saveText() {
-        if textDraft.value != item.text { store.updateText(item, textDraft.value) }
+        if let rich = richDraft.text {
+            store.updateText(item, rich)
+            richDraft.text = nil
+        } else if textDraft.value != item.text {
+            store.updateText(item, textDraft.value)
+        }
     }
 
     private func commitTitle() {
@@ -265,7 +276,7 @@ private struct PreviewCard: View {
             if state.editing {
                 Button("Cancel") { state.editing = false }
                 Button("Save") {
-                    store.updateText(item, textDraft.value)
+                    saveText()
                     state.editing = false
                 }
                 .buttonStyle(.borderedProminent)
@@ -303,13 +314,18 @@ private struct PreviewCard: View {
     @ViewBuilder
     private var content: some View {
         switch item.kind {
-        case .text where state.editing, .link where state.editing, .color where state.editing:
-            TextEditor(text: $textDraft.value)
-                .font(.system(size: 13))
-                .scrollContentBackground(.hidden)
-                .padding(10)
-                .focused($focus, equals: .body)
+        case .text where state.editing, .link where state.editing:
+            if let rich = Self.richText(of: item, store: store) {
+                RichTextEditor(text: rich) { edited in
+                    richDraft.text = edited
+                    textDraft.value = edited.string
+                }
                 .background(Color(nsColor: .textBackgroundColor))
+            } else {
+                plainEditor
+            }
+        case .color where state.editing:
+            plainEditor
         case .text:
             if let rich = Self.richText(of: item, store: store) {
                 RichTextView(text: rich)
@@ -338,6 +354,15 @@ private struct PreviewCard: View {
         case .color:
             ColorSwatch(hex: item.text ?? "").padding(20)
         }
+    }
+
+    private var plainEditor: some View {
+        TextEditor(text: $textDraft.value)
+            .font(.system(size: 13))
+            .scrollContentBackground(.hidden)
+            .padding(10)
+            .focused($focus, equals: .body)
+            .background(Color(nsColor: .textBackgroundColor))
     }
 
     private func picture(_ image: NSImage) -> some View {
@@ -380,14 +405,12 @@ private struct PreviewCard: View {
     /// The clip's formatted text, read and parsed once. Parsing HTML is slow, and the popup
     /// redraws often, so doing it in `body` made moving between clips stutter.
     static func richText(of item: ClipItem, store: ClipStore) -> NSAttributedString? {
-        guard let file = item.richFile else { return nil }
+        guard let file = item.pasteboardFile ?? item.richFile else { return nil }
         // A clip synced from another Mac rewrites its file under the same name, so key on the text too.
         let key = "\(file)|\(item.contentKey.hashValue)" as NSString
         if let cached = richCache.object(forKey: key) { return cached }
-        guard let (data, type) = store.richData(for: item) else { return nil }
-        let text = type == "rtf" ? NSAttributedString(rtf: data, documentAttributes: nil)
-                                 : NSAttributedString(html: data, documentAttributes: nil)
-        if let text { richCache.setObject(text, forKey: key) }
+        guard let text = store.formattedText(for: item) else { return nil }
+        richCache.setObject(text, forKey: key)
         return text
     }
 
@@ -428,7 +451,9 @@ private struct PreviewCard: View {
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count
             var parts = ["\(text.count.formatted()) characters", "\(words.formatted()) words",
                          "\(lines.formatted()) lines"]
-            if item.richFile != nil, !state.editing { parts.append(item.richType?.uppercased() ?? "Rich text") }
+            if item.hasFormatting, !state.editing {
+                parts.append(item.richType?.uppercased() ?? "Formatting from \(item.sourceName ?? "its app")")
+            }
             return parts
         case .image:
             guard let path = store.imageURL(for: item)?.path,
@@ -467,6 +492,61 @@ struct RichTextView: NSViewRepresentable {
 
     final class Coordinator {
         var shown: NSAttributedString?
+    }
+}
+
+/// The formatted text being edited, kept apart from the view so typing doesn't redraw it.
+final class RichDraft: ObservableObject {
+    var text: NSAttributedString?
+}
+
+/// Editable formatted text. Styles and links are kept, and pasting into it keeps formatting too.
+struct RichTextEditor: NSViewRepresentable {
+    let text: NSAttributedString
+    let onChange: (NSAttributedString) -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let view = scroll.documentView as! NSTextView
+        view.isEditable = true
+        view.isRichText = true
+        view.allowsUndo = true
+        view.isAutomaticLinkDetectionEnabled = false
+        view.drawsBackground = false
+        view.textContainerInset = NSSize(width: 10, height: 10)
+        view.textStorage?.setAttributedString(text)
+        view.delegate = context.coordinator
+        scroll.drawsBackground = false
+        // Take the keyboard once the popup (which becomes key for editing) is on screen.
+        DispatchQueue.main.async {
+            view.window?.makeFirstResponder(view)
+            view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.onChange = onChange
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var onChange: (NSAttributedString) -> Void
+
+        init(onChange: @escaping (NSAttributedString) -> Void) { self.onChange = onChange }
+
+        /// Typing next to a mention or emoji shouldn't become part of it.
+        func textView(_ view: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            if view.typingAttributes[.slackMention] != nil { view.typingAttributes[.foregroundColor] = NSColor.textColor }
+            for key in [NSAttributedString.Key.slackMention, .slackEmbed, .slackLine] { view.typingAttributes[key] = nil }
+            return true
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            onChange(NSAttributedString(attributedString: view.attributedString()))
+        }
     }
 }
 

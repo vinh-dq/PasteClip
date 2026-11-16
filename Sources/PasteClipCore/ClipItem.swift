@@ -49,6 +49,9 @@ public struct ClipItem: Identifiable, Codable, Equatable {
     public var richFile: String?
     /// `rtf` or `html`.
     public var richType: String?
+    /// File in the store's `rich` folder holding everything the source app put on the pasteboard,
+    /// including its own formats (Slack, VS Code, Office…), so pasting gives that app its formatting back.
+    public var pasteboardFile: String?
     /// Text found in an image by Vision.
     public var ocrText: String?
     public var sourceBundleID: String?
@@ -73,6 +76,8 @@ public struct ClipItem: Identifiable, Codable, Equatable {
     public var isKept: Bool { pinned || pinboardID != nil }
 
     public var isTextual: Bool { kind == .text || kind == .link || kind == .color }
+
+    public var hasFormatting: Bool { richFile != nil || pasteboardFile != nil }
 
     /// What makes two clips "the same" for de-duplication.
     public var contentKey: String {

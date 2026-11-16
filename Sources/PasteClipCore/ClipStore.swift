@@ -102,17 +102,8 @@ public final class ClipStore: ObservableObject {
            !urls.isEmpty {
             return ClipItem(kind: .file, filePaths: urls.map(\.path))
         }
-        if let string = pasteboard.string(forType: .string),
-           !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            var item = ClipItem(kind: ClipKind.detect(string), text: string)
-            if item.kind == .text, let (data, type) = richData(in: types) {
-                let name = "\(item.id.uuidString).\(type)"
-                if (try? data.write(to: richDir.appendingPathComponent(name))) != nil {
-                    item.richFile = name
-                    item.richType = type
-                }
-            }
-            return item
+        if let string = pasteboard.string(forType: .string), !Self.isBlank(string) {
+            return textItem(string, rich: richData(in: types))
         }
         if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
            let image = NSImage(data: data),
@@ -123,13 +114,116 @@ public final class ClipStore: ObservableObject {
             item.imageFile = name
             return item
         }
+        // Some apps copy only formatted text, with no plain version alongside.
+        if let rich = richData(in: types), let string = Self.attributedString(from: rich.0, type: rich.1)?.string,
+           !Self.isBlank(string.replacingOccurrences(of: "\u{FFFC}", with: "")) {
+            return textItem(string, rich: rich)
+        }
         return nil
     }
 
+    private static func isBlank(_ string: String) -> Bool {
+        string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// A text clip, keeping its formatting. Links keep theirs too: a linked URL can carry a
+    /// different label or style in the app it came from.
+    private func textItem(_ string: String, rich: (Data, String)?) -> ClipItem {
+        var item = ClipItem(kind: ClipKind.detect(string), text: string)
+        let contents = item.kind == .color ? nil : pasteboardContents()
+        var rich = rich
+        // Slack's own formatting, also kept as RTF so other apps get the bold and links.
+        if rich == nil, let contents, let text = SlackFormatting.attributedString(from: contents),
+           let rtf = Self.rtf(of: SlackFormatting.portable(text)) {
+            rich = (rtf, "rtf")
+        }
+        if item.kind != .color, let (data, type) = rich {
+            let name = "\(item.id.uuidString).\(type)"
+            if (try? data.write(to: richDir.appendingPathComponent(name))) != nil {
+                item.richFile = name
+                item.richType = type
+            }
+        }
+        if let contents { item.pasteboardFile = write(contents, name: "\(item.id.uuidString).pasteboard") }
+        return item
+    }
+
+    private func write(_ contents: [[String: Data]], name: String) -> String? {
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: contents, format: .binary, options: 0),
+              (try? data.write(to: richDir.appendingPathComponent(name))) != nil else { return nil }
+        return name
+    }
+
+    /// The clip's text with its formatting, for showing and editing. Slack's own formatting comes
+    /// first, as only it has mentions. HTML is parsed with WebKit, so call this on the main thread.
+    public func formattedText(for item: ClipItem) -> NSAttributedString? {
+        if let contents = pasteboardContents(for: item), let text = SlackFormatting.attributedString(from: contents) {
+            return text
+        }
+        guard let (data, type) = richData(for: item) else { return nil }
+        return Self.attributedString(from: data, type: type)
+    }
+
+    /// Plain text, RTF and HTML under their own and their legacy names: `text` and `richFile`
+    /// already hold those.
+    private static let plainTypes: Set<String> = [
+        "public.utf8-plain-text", "public.utf16-plain-text", "public.utf16-external-plain-text",
+        "public.plain-text", "public.text", "com.apple.traditional-mac-plain-text", "NSStringPboardType",
+        "public.rtf", "NeXT Rich Text Format v1.0 pasteboard type", "public.html", "Apple HTML pasteboard type",
+    ]
+    private static let maxPasteboardBytes = 20 << 20
+
+    /// Every type on the pasteboard, item by item, when there's more to it than plain text,
+    /// RTF and HTML: apps such as Slack, VS Code and Office keep their formatting in types of
+    /// their own and read only those back. Markers like "concealed" are left out, and so is
+    /// anything too large.
+    private func pasteboardContents() -> [[String: Data]]? {
+        guard let items = pasteboard.pasteboardItems, !items.isEmpty else { return nil }
+        let types = items.flatMap { $0.types.map(\.rawValue) }
+        // `dyn.` types are aliases the system makes up for old type names.
+        let extra = types.contains { !Self.plainTypes.contains($0) && !$0.hasPrefix("dyn.") && !$0.hasPrefix("org.nspasteboard.") }
+        guard items.count > 1 || extra else { return nil }
+        var total = 0
+        let contents = items.map { item in
+            var entry: [String: Data] = [:]
+            for type in item.types where !type.rawValue.hasPrefix("org.nspasteboard.") {
+                guard let data = item.data(forType: type), total + data.count <= Self.maxPasteboardBytes else { continue }
+                total += data.count
+                entry[type.rawValue] = data
+            }
+            return entry
+        }
+        return contents.contains { !$0.isEmpty } ? contents : nil
+    }
+
+    /// What `pasteboardFile` holds.
+    func pasteboardContents(for item: ClipItem) -> [[String: Data]]? {
+        guard let name = item.pasteboardFile,
+              let data = try? Data(contentsOf: richDir.appendingPathComponent(name)) else { return nil }
+        return try? PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Data]]
+    }
+
+    /// The copied formatting, as RTF or HTML. RTFD (Notes, Pages, TextEdit with pictures) is kept
+    /// as RTF: its text formatting and links survive, its pictures don't.
     private func richData(in types: [NSPasteboard.PasteboardType]) -> (Data, String)? {
         if types.contains(.rtf), let data = pasteboard.data(forType: .rtf) { return (data, "rtf") }
+        if types.contains(.rtfd), let data = pasteboard.data(forType: .rtfd),
+           let text = NSAttributedString(rtfd: data, documentAttributes: nil),
+           let rtf = Self.rtf(of: text) {
+            return (rtf, "rtf")
+        }
         if types.contains(.html), let data = pasteboard.data(forType: .html) { return (data, "html") }
         return nil
+    }
+
+    /// Parses formatted text stored as `rtf` or `html`. HTML is parsed with WebKit, so call that on the main thread.
+    public static func attributedString(from data: Data, type: String) -> NSAttributedString? {
+        type == "rtf" ? NSAttributedString(rtf: data, documentAttributes: nil)
+                      : NSAttributedString(html: data, documentAttributes: nil)
+    }
+
+    static func rtf(of text: NSAttributedString) -> Data? {
+        text.rtf(from: NSRange(location: 0, length: text.length), documentAttributes: [:])
     }
 
     /// Adds a clip at the top. A clip with the same content is moved up instead, keeping its
@@ -143,10 +237,12 @@ public final class ClipStore: ObservableObject {
             existing.date = item.date
             existing.sourceBundleID = item.sourceBundleID ?? existing.sourceBundleID
             existing.sourceName = item.sourceName ?? existing.sourceName
-            if item.richFile != nil {
-                deleteRich(of: existing)
+            // A copy with formatting replaces the old formatting; a plain copy of the same text keeps it.
+            if item.hasFormatting {
+                deleteFormatting(of: existing)
                 existing.richFile = item.richFile
                 existing.richType = item.richType
+                existing.pasteboardFile = item.pasteboardFile
             }
             item = existing
         }
@@ -214,9 +310,26 @@ public final class ClipStore: ObservableObject {
         pasteboard.clearContents()
         switch item.kind {
         case .text, .link, .color:
-            pasteboard.setString(item.text ?? "", forType: .string)
-            if !plainText, let (data, type) = richData(for: item) {
-                pasteboard.setData(data, forType: type == "rtf" ? .rtf : .html)
+            if !plainText, let contents = pasteboardContents(for: item) {
+                // Exactly what the source app copied, plus HTML for browsers if it had only RTF.
+                let extra = richRepresentations(for: item)
+                let entries = contents.enumerated().map { n, entry in
+                    let pasteboardItem = NSPasteboardItem()
+                    for (type, data) in entry { pasteboardItem.setData(data, forType: .init(type)) }
+                    if n == 0 {
+                        if entry[NSPasteboard.PasteboardType.string.rawValue] == nil {
+                            pasteboardItem.setString(item.text ?? "", forType: .string)
+                        }
+                        for (type, data) in extra where entry[type.rawValue] == nil { pasteboardItem.setData(data, forType: type) }
+                    }
+                    return pasteboardItem
+                }
+                pasteboard.writeObjects(entries)
+            } else {
+                pasteboard.setString(item.text ?? "", forType: .string)
+                if !plainText {
+                    for (type, data) in richRepresentations(for: item) { pasteboard.setData(data, forType: type) }
+                }
             }
         case .image:
             if plainText, let text = item.ocrText {
@@ -263,12 +376,35 @@ public final class ClipStore: ObservableObject {
     public func updateText(_ item: ClipItem, _ text: String) {
         guard item.isTextual, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let current = self.item(withID: item.id), current.text != text else { return }
-        deleteRich(of: current)
+        deleteFormatting(of: current)
         update(item.id) {
             $0.text = text
             $0.kind = ClipKind.detect(text)
             $0.richFile = nil
             $0.richType = nil
+            $0.pasteboardFile = nil
+        }
+    }
+
+    /// Replaces the text of a clip with formatted text, saved as RTF so styles and links are kept.
+    public func updateText(_ item: ClipItem, _ text: NSAttributedString) {
+        guard item.isTextual, !Self.isBlank(text.string), let current = self.item(withID: item.id) else { return }
+        guard let data = Self.rtf(of: SlackFormatting.portable(text)) else { return updateText(item, text.string) }
+        // New names for every edit, so views that cache the formatting by file see the change.
+        let stem = "\(item.id.uuidString)-\(UUID().uuidString.prefix(8))"
+        guard (try? data.write(to: richDir.appendingPathComponent("\(stem).rtf"))) != nil else { return }
+        // Slack's formatting is rewritten with the new text; other apps' own formats still hold
+        // the old text, so they go.
+        let appFormats = pasteboardContents(for: current)
+            .flatMap { SlackFormatting.contents($0, replacingTextWith: text) }
+            .flatMap { write($0, name: "\(stem).pasteboard") }
+        deleteFormatting(of: current)
+        update(item.id) {
+            $0.text = text.string
+            $0.kind = ClipKind.detect(text.string)
+            $0.richFile = "\(stem).rtf"
+            $0.richType = "rtf"
+            $0.pasteboardFile = appFormats
         }
     }
 
@@ -420,16 +556,30 @@ public final class ClipStore: ObservableObject {
         return (data, type)
     }
 
+    /// The clip's formatting for the pasteboard. RTF is offered as HTML too, since browsers read
+    /// only HTML; converting is quick. HTML is left as it is: most apps read it, and turning it
+    /// into RTF goes through WebKit, which can take a second and would hold up the paste.
+    public func richRepresentations(for item: ClipItem) -> [NSPasteboard.PasteboardType: Data] {
+        guard let (data, type) = richData(for: item) else { return [:] }
+        guard type == "rtf" else { return [.html: data] }
+        let html = NSAttributedString(rtf: data, documentAttributes: nil).flatMap { text in
+            try? text.data(from: NSRange(location: 0, length: text.length),
+                           documentAttributes: [.documentType: NSAttributedString.DocumentType.html])
+        }
+        return [.rtf: data, .html: html].compactMapValues { $0 }
+    }
+
     private func deleteFiles(of item: ClipItem) {
         if let name = item.imageFile {
             try? FileManager.default.removeItem(at: imageDir.appendingPathComponent(name))
             imageCache.removeObject(forKey: name as NSString)
         }
-        deleteRich(of: item)
+        deleteFormatting(of: item)
     }
 
-    private func deleteRich(of item: ClipItem) {
+    private func deleteFormatting(of item: ClipItem) {
         if let url = richURL(for: item) { try? FileManager.default.removeItem(at: url) }
+        if let name = item.pasteboardFile { try? FileManager.default.removeItem(at: richDir.appendingPathComponent(name)) }
     }
 
     // MARK: - Sync
@@ -451,6 +601,12 @@ public final class ClipStore: ObservableObject {
             item.richFile = copyIn(richSource, to: richDir, name: "\(item.id.uuidString).\(type)") ?? old?.richFile
         } else {
             item.richFile = nil
+        }
+        // The source app's formats aren't synced; they stay while the text is unchanged.
+        if let old, old.text == item.text {
+            item.pasteboardFile = old.pasteboardFile
+        } else if let old, let name = old.pasteboardFile {
+            try? FileManager.default.removeItem(at: richDir.appendingPathComponent(name))
         }
         if let name = item.imageFile { imageCache.removeObject(forKey: name as NSString) }
         items.removeAll { $0.id == item.id }
