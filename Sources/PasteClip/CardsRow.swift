@@ -2,11 +2,12 @@ import AppKit
 import PasteClipCore
 import SwiftUI
 
-/// The scrolling row of cards. It is the only part of the shelf that watches the selection,
-/// and each card is `Equatable`, so changing the selection only redraws two selection rings.
+/// The scrolling row of cards. The row itself doesn't watch the selection: each card's
+/// `SelectionRing` does, and each card is `Equatable`, so moving the selection only redraws
+/// two rings instead of rebuilding every card.
 struct CardsRow: View {
     @ObservedObject var state: ShelfState
-    @ObservedObject var selection: SelectionModel
+    let selection: SelectionModel
     @ObservedObject var store: ClipStore
     @ObservedObject var settings: AppSettings
 
@@ -20,58 +21,40 @@ struct CardsRow: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            let stack = Set(store.stack)
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 16) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            card(item, index: index)
+                            card(item, index: index, inStack: stack.contains(item.id))
                         }
                     }
                     .padding(.vertical, 8)
                     // Room for the reorder bar beside the first and last cards.
                     .padding(.horizontal, 12)
                 }
-                // Follow keyboard moves; clicks leave the row where it is.
-                .onChange(of: selection.scrollRequest) {
-                    guard items.indices.contains(selection.index) else { return }
-                    withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(items[selection.index].id) }
-                }
+                .background { ScrollFollower(selection: selection, items: items, proxy: proxy) }
             }
         }
     }
 
-    private func card(_ item: ClipItem, index: Int) -> some View {
-        let selected = index == selection.index
-        let stack = Set(store.stack)
-        return ClipCard(item: item, store: store, index: index,
+    private func card(_ item: ClipItem, index: Int, inStack: Bool) -> some View {
+        ClipCard(item: item, store: store, index: index,
                         board: item.pinboardID.flatMap(store.pinboard(withID:)),
-                        inStack: stack.contains(item.id),
+                        inStack: inStack,
                         showLinkPreview: settings.linkPreviews,
                         quickPasteSymbol: settings.quickPasteModifier.symbol,
                         renaming: state.renamingID == item.id,
                         onEndRenaming: { if state.renamingID == item.id { state.renamingID = nil } })
             .equatable()
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
-                    .padding(-1.5)
-                    .opacity(selected ? 1 : 0)
-            )
-            .scaleEffect(selected ? 1 : 0.97)
-            .animation(.easeOut(duration: 0.1), value: selected)
+            .modifier(SelectionRing(selection: selection, index: index, cardFrame: state.previewing ? state.cardFrame : nil))
             .id(item.id)
-            .background { if state.previewing && selected { frameReporter } }
-            .overlay(alignment: reorderEdge(for: item, in: index)) {
-                if state.reorderTarget == item.id, state.draggingID != item.id {
-                    Capsule().fill(Color.accentColor).frame(width: 4).padding(.vertical, 6)
-                        .offset(x: reorderEdge(for: item, in: index) == .leading ? -10 : 10)
-                }
-            }
+            .modifier(ReorderBar(reorder: state.reorder, id: item.id, index: index))
             .onDrag {
-                state.draggingID = item.id
+                state.reorder.start(item.id, at: index)
                 return ClipDrag.provider(for: item, store: store)
             }
-            .onDrop(of: [ClipDrag.type], delegate: ReorderDropDelegate(target: item, state: state, store: store))
+            .onDrop(of: [ClipDrag.type], delegate: ReorderDropDelegate(target: item, index: index, state: state, store: store))
             // A single click selects at once; the double-click is recognised alongside it
             // instead of making every click wait to see whether a second one follows.
             // Double-clicking the header renames the clip; anywhere else pastes it.
@@ -86,13 +69,6 @@ struct CardsRow: View {
             .contextMenu { menu(for: item, index: index) }
     }
 
-    /// A dragged card takes the target's place: before it when coming from the right, after it
-    /// when coming from the left. The insertion bar shows on that side.
-    private func reorderEdge(for item: ClipItem, in index: Int) -> Alignment {
-        let from = state.visible.firstIndex { $0.id == state.draggingID } ?? Int.max
-        return from > index ? .leading : .trailing
-    }
-
     private static func isHeld(_ key: ModifierKey) -> Bool {
         let flags = NSEvent.modifierFlags
         switch key {
@@ -100,15 +76,6 @@ struct CardsRow: View {
         case .option: return flags.contains(.option)
         case .control: return flags.contains(.control)
         case .shift: return flags.contains(.shift)
-        }
-    }
-
-    /// Reports where the selected card is while the preview is open, including while the row scrolls.
-    private var frameReporter: some View {
-        GeometryReader { g in
-            Color.clear
-                .onAppear { state.cardFrame.frame = g.frame(in: .global) }
-                .onChange(of: g.frame(in: .global)) { _, frame in state.cardFrame.frame = frame }
         }
     }
 
@@ -159,9 +126,86 @@ struct CardsRow: View {
     }
 }
 
+/// The ring and slight lift on the selected card. Each card watches the selection on its own,
+/// so a move redraws this small view on each card rather than the whole row.
+private struct SelectionRing: ViewModifier {
+    @ObservedObject var selection: SelectionModel
+    let index: Int
+    /// Set while the preview is open, to report where the selected card is.
+    let cardFrame: CardFrameTracker?
+
+    func body(content: Content) -> some View {
+        let selected = index == selection.index
+        content
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(-1.5)
+                    .opacity(selected ? 1 : 0)
+            )
+            .scaleEffect(selected ? 1 : 0.97)
+            .animation(.easeOut(duration: 0.1), value: selected)
+            .background { if selected, let cardFrame { frameReporter(cardFrame) } }
+    }
+
+    /// Reports where the selected card is while the preview is open, including while the row scrolls.
+    private func frameReporter(_ tracker: CardFrameTracker) -> some View {
+        GeometryReader { g in
+            Color.clear
+                .onAppear { tracker.frame = g.frame(in: .global) }
+                .onChange(of: g.frame(in: .global)) { _, frame in tracker.frame = frame }
+        }
+    }
+}
+
+/// Scrolls the row to follow keyboard moves; clicks leave the row where it is.
+private struct ScrollFollower: View {
+    @ObservedObject var selection: SelectionModel
+    let items: [ClipItem]
+    let proxy: ScrollViewProxy
+    @StateObject private var lastMove = ViewState(Date.distantPast)
+
+    var body: some View {
+        Color.clear.onChange(of: selection.scrollRequest) {
+            guard items.indices.contains(selection.index) else { return }
+            let id = items[selection.index].id
+            // A held arrow key repeats faster than the animation runs; animating every step
+            // re-lays out the row on each frame and falls behind, so repeats just jump.
+            let repeating = Date().timeIntervalSince(lastMove.value) < 0.15
+            lastMove.value = Date()
+            if repeating {
+                proxy.scrollTo(id)
+            } else {
+                withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id) }
+            }
+        }
+    }
+}
+
+/// The insertion bar beside a card while another card is dragged over it. It watches the drag
+/// on its own, so hovering over cards redraws these bars rather than the shelf.
+private struct ReorderBar: ViewModifier {
+    @ObservedObject var reorder: ReorderModel
+    let id: UUID
+    let index: Int
+
+    func body(content: Content) -> some View {
+        // A dragged card takes the target's place: before it when coming from the right, after it
+        // when coming from the left. The bar shows on that side.
+        let edge: Alignment = (reorder.draggingIndex ?? Int.max) > index ? .leading : .trailing
+        content.overlay(alignment: edge) {
+            if reorder.target == id, reorder.dragging != id {
+                Capsule().fill(Color.accentColor).frame(width: 4).padding(.vertical, 6)
+                    .offset(x: edge == .leading ? -10 : 10)
+            }
+        }
+    }
+}
+
 /// Dropping a card on another card of the same pinboard moves it there. History keeps its order.
 private struct ReorderDropDelegate: DropDelegate {
     let target: ClipItem
+    let index: Int
     let state: ShelfState
     let store: ClipStore
 
@@ -169,19 +213,23 @@ private struct ReorderDropDelegate: DropDelegate {
         state.query.pinboardID != nil && info.hasItemsConforming(to: [ClipDrag.type])
     }
 
-    func dropEntered(info: DropInfo) { state.reorderTarget = target.id }
+    func dropEntered(info: DropInfo) { state.reorder.hover(target.id) }
 
-    func dropExited(info: DropInfo) {
-        if state.reorderTarget == target.id { state.reorderTarget = nil }
-    }
+    func dropExited(info: DropInfo) { state.reorder.leave(target.id) }
 
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
 
     func performDrop(info: DropInfo) -> Bool {
-        state.reorderTarget = nil
-        return ClipDrag.receive(info.itemProviders(for: [ClipDrag.type])) { [state, store, target] id in
-            state.draggingID = nil
-            withAnimation(.easeOut(duration: 0.2)) { store.moveClip(id, to: target.id) }
+        // A card dragged within the shelf is known already; moving it now, rather than after the
+        // item provider has loaded its id, keeps the card from jumping once the drop has settled.
+        if let id = state.reorder.dragging {
+            state.reorder.end()
+            withAnimation(.snappy(duration: 0.22)) { store.moveClip(id, to: target.id) }
+            return true
+        }
+        state.reorder.end()
+        return ClipDrag.receive(info.itemProviders(for: [ClipDrag.type])) { [store, target] id in
+            withAnimation(.snappy(duration: 0.22)) { store.moveClip(id, to: target.id) }
         }
     }
 }

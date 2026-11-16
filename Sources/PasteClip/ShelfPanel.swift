@@ -53,7 +53,7 @@ final class ShelfController {
             self?.hide()
             openSettings()
         }
-        panel.contentView = NSHostingView(rootView: ShelfView(state: state, store: store, settings: settings))
+        panel.contentView = HostingView(rootView: ShelfView(state: state, store: store, settings: settings))
         observePreview()
     }
 

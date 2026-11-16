@@ -37,7 +37,7 @@ final class PreviewPopupController {
 
     init(state: ShelfState, store: ClipStore) {
         self.store = store
-        panel.contentView = NSHostingView(rootView: PreviewPopup(state: state, selection: state.selectionModel,
+        panel.contentView = HostingView(rootView: PreviewPopup(state: state, selection: state.selectionModel,
                                                                  store: store, geometry: geometry))
     }
 
@@ -65,7 +65,13 @@ final class PreviewPopupController {
         geometry.pointsDown = fitsAbove
         geometry.arrowX = min(max(cardMidX - x, 24), size.width - 24)
         panel.sharingType = sharingType
-        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        // Following the card while the row scrolls only moves the popup; resizing re-lays out its content.
+        if panel.frame.size == size {
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        } else {
+            // Laid out with the next frame rather than right away, so it happens once per move.
+            panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: false)
+        }
         if panel.parent == nil { shelf.addChildWindow(panel, ordered: .above) }
         panel.orderFront(nil)
     }
@@ -99,7 +105,7 @@ final class PreviewPopupController {
         let key = "\(item.contentKey)|\(full)"
         if let cached = textSizes[item.id], cached.key == key { return cached.size }
         let text: NSAttributedString
-        if let (data, type) = store.richData(for: item), let rich = PreviewCard.attributed(data, type: type) {
+        if let rich = PreviewCard.richText(of: item, store: store) {
             text = rich
         } else {
             text = NSAttributedString(string: item.text ?? "", attributes: [.font: NSFont.systemFont(ofSize: 13)])
@@ -134,7 +140,8 @@ struct PreviewPopup: View {
         VStack(spacing: 0) {
             if !geometry.pointsDown { arrow.rotationEffect(.degrees(180)) }
             Group {
-                if let item = state.selectedItem {
+                // Built only while shown: a hidden popup would otherwise rebuild on every move.
+                if state.previewing, let item = state.selectedItem {
                     PreviewCard(item: item, state: state, store: store)
                         .id(item.id)
                 } else {
@@ -209,6 +216,11 @@ private struct PreviewCard: View {
                 state.commitEdit = nil
                 if focus == .body { focus = nil }
             }
+        }
+        // The popup stays mounted while hidden, so follow renames made on the card; otherwise the
+        // stale draft would be saved over the new title when this view goes away.
+        .onChange(of: item.title) { _, title in
+            if focus != .title { titleDraft.value = title ?? "" }
         }
         .onChange(of: focus) { _, field in
             state.textInputActive = field != nil
@@ -299,7 +311,7 @@ private struct PreviewCard: View {
                 .focused($focus, equals: .body)
                 .background(Color(nsColor: .textBackgroundColor))
         case .text:
-            if let (data, type) = store.richData(for: item), let rich = Self.attributed(data, type: type) {
+            if let rich = Self.richText(of: item, store: store) {
                 RichTextView(text: rich)
             } else {
                 ScrollView {
@@ -317,7 +329,7 @@ private struct PreviewCard: View {
         case .file:
             if let path = item.filePaths?.first {
                 // Image files are drawn like copied images, sized to the popup with no extra margins.
-                if FileThumbnails.pixelSize(of: path) != nil, let image = NSImage(contentsOfFile: path) {
+                if FileThumbnails.pixelSize(of: path) != nil, let image = Self.fileImage(at: path) {
                     picture(image)
                 } else {
                     QuickLookView(url: URL(fileURLWithPath: path))
@@ -358,9 +370,32 @@ private struct PreviewCard: View {
         .padding(18)
     }
 
-    static func attributed(_ data: Data, type: String) -> NSAttributedString? {
-        if type == "rtf" { return NSAttributedString(rtf: data, documentAttributes: nil) }
-        return NSAttributedString(html: data, documentAttributes: nil)
+    private static let richCache = NSCache<NSString, NSAttributedString>()
+    private static let imageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 8
+        return cache
+    }()
+
+    /// The clip's formatted text, read and parsed once. Parsing HTML is slow, and the popup
+    /// redraws often, so doing it in `body` made moving between clips stutter.
+    static func richText(of item: ClipItem, store: ClipStore) -> NSAttributedString? {
+        guard let file = item.richFile else { return nil }
+        // A clip synced from another Mac rewrites its file under the same name, so key on the text too.
+        let key = "\(file)|\(item.contentKey.hashValue)" as NSString
+        if let cached = richCache.object(forKey: key) { return cached }
+        guard let (data, type) = store.richData(for: item) else { return nil }
+        let text = type == "rtf" ? NSAttributedString(rtf: data, documentAttributes: nil)
+                                 : NSAttributedString(html: data, documentAttributes: nil)
+        if let text { richCache.setObject(text, forKey: key) }
+        return text
+    }
+
+    private static func fileImage(at path: String) -> NSImage? {
+        if let cached = imageCache.object(forKey: path as NSString) { return cached }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        imageCache.setObject(image, forKey: path as NSString)
+        return image
     }
 
     // MARK: Footer
@@ -422,7 +457,16 @@ struct RichTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        // The text is cached, so the same object means nothing changed; resetting it re-lays it out.
+        guard context.coordinator.shown !== text else { return }
+        context.coordinator.shown = text
         (scroll.documentView as? NSTextView)?.textStorage?.setAttributedString(text)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var shown: NSAttributedString?
     }
 }
 

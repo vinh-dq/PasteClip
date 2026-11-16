@@ -22,10 +22,21 @@ struct ClipCard: View, Equatable {
     static let headerHeight: CGFloat = 50
 
     static func == (a: ClipCard, b: ClipCard) -> Bool {
-        a.item == b.item && a.index == b.index && a.board == b.board && a.inStack == b.inStack
+        a.shown == b.shown && a.shortcutIndex == b.shortcutIndex && a.board == b.board && a.inStack == b.inStack
             && a.showLinkPreview == b.showLinkPreview && a.quickPasteSymbol == b.quickPasteSymbol
             && a.renaming == b.renaming
     }
+
+    /// The clip without its place on the pinboard, which the card doesn't show; reordering a
+    /// pinboard renumbers every clip on it and would otherwise redraw them all.
+    private var shown: ClipItem {
+        var item = item
+        item.boardOrder = nil
+        return item
+    }
+
+    /// Only the first nine cards show their position, as a quick-paste shortcut.
+    private var shortcutIndex: Int { min(index, 9) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,7 +50,7 @@ struct ClipCard: View, Equatable {
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         // Flatten the card first so the shadow is drawn once, not for every layer inside it.
-        .compositingGroup()
+        .flattened(!renaming)
         .shadow(color: .black.opacity(0.14), radius: 5, y: 3)
         .onAppear {
             if showLinkPreview, item.kind == .link, let link = item.text { links.load(link) }
@@ -233,6 +244,15 @@ struct ClipCard: View, Equatable {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
+    }
+}
+
+private extension View {
+    /// Draws the card into one layer, so scrolling the row moves a few layers instead of
+    /// syncing every gradient, text and image inside each card. The title field can't be drawn
+    /// that way (it is an AppKit view), so a card being renamed is only grouped.
+    @ViewBuilder func flattened(_ flat: Bool) -> some View {
+        if flat { drawingGroup() } else { compositingGroup() }
     }
 }
 

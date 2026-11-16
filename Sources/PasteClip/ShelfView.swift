@@ -29,6 +29,33 @@ final class SelectionModel: ObservableObject {
     }
 }
 
+/// The card being dragged within the row and the card it is over. Separate from `ShelfState`
+/// so that hovering over cards doesn't redraw the whole shelf.
+final class ReorderModel: ObservableObject {
+    @Published private(set) var dragging: UUID?
+    @Published private(set) var target: UUID?
+    private(set) var draggingIndex: Int?
+
+    func start(_ id: UUID, at index: Int) {
+        draggingIndex = index
+        dragging = id
+    }
+
+    func hover(_ id: UUID) {
+        if target != id { target = id }
+    }
+
+    func leave(_ id: UUID) {
+        if target == id { target = nil }
+    }
+
+    func end() {
+        draggingIndex = nil
+        if dragging != nil { dragging = nil }
+        if target != nil { target = nil }
+    }
+}
+
 /// UI state for the shelf, shared with the panel controller for keyboard handling.
 final class ShelfState: ObservableObject {
     @Published var query = ClipQuery()
@@ -43,16 +70,13 @@ final class ShelfState: ObservableObject {
     @Published var renamingID: UUID?
     /// Saves the text being edited in the popup; set while editing.
     var commitEdit: (() -> Void)?
-    /// The card being dragged, so a pinboard's cards can show where it would land.
-    @Published var draggingID: UUID?
-    /// The card a dragged card is over, on a pinboard.
-    @Published var reorderTarget: UUID?
     /// Clips matching the query. Recomputed only when the clips or the query change.
     @Published private(set) var visible: [ClipItem] = []
     /// Apps that clips came from, sorted by name.
     @Published private(set) var sourceApps: [SourceApp] = []
 
     let cardFrame = CardFrameTracker()
+    let reorder = ReorderModel()
     let selectionModel = SelectionModel()
     let store: ClipStore
     var onPaste: (ClipItem, Bool) -> Void = { _, _ in }
@@ -147,8 +171,7 @@ final class ShelfState: ObservableObject {
     }
 
     func reset() {
-        draggingID = nil
-        reorderTarget = nil
+        reorder.end()
         query = ClipQuery()
         selection = 0
         closePreview()
@@ -317,8 +340,9 @@ struct ShelfView: View {
         )) { providers in
             if PinboardDrag.receive(providers, { id in
                 guard let board, let to = store.pinboards.firstIndex(where: { $0.id == board.id }) else { return }
-                withAnimation(.easeOut(duration: 0.15)) { store.movePinboard(id, to: to) }
+                withAnimation(.snappy(duration: 0.2)) { store.movePinboard(id, to: to) }
             }) { return board != nil }
+            state.reorder.end()
             return ClipDrag.receive(providers) { id in
                 guard let item = store.item(withID: id) else { return }
                 store.setPinboard(item, board)
