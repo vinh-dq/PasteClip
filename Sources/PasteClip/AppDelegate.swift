@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self?.settingsWindow.show()
     }
     private lazy var stackPanel = StackController(store: store, settings: settings)
+    private lazy var screenText = ScreenTextCapture(store: store, settings: settings)
     private var statusItem: NSStatusItem!
     private var hotKeys: [HotKey] = []
     private var subscriptions = Set<AnyCancellable>()
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bindSettings()
         store.onCapture = { [weak self] _ in self?.play("Tink") }
         shelf.onPasted = { [weak self] in self?.play("Pop") }
+        screenText.onCopied = { [weak self] in self?.play("Tink") }
         store.start()
         setupStatusItem()
 
@@ -29,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Lets you jump straight to a screen while working on the UI:
-    /// `PasteClip --open shelf|preview|general|privacy|shortcuts`.
+    /// `PasteClip --open shelf|preview|general|text|privacy|shortcuts`.
     private func openFromArguments() {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--open"), args.indices.contains(i + 1) else { return }
@@ -53,12 +55,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.$excludedBundleIDs.sink { [store] in store.excludedBundleIDs = Set($0) }.store(in: &subscriptions)
         settings.$skipConcealed.sink { [store] in store.skipConcealed = $0 }.store(in: &subscriptions)
         settings.$skipTransient.sink { [store] in store.skipTransient = $0 }.store(in: &subscriptions)
+        settings.$textLanguages.sink { [store] in store.recognitionLanguages = $0 }.store(in: &subscriptions)
+        settings.$textLanguages
+            .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
+            .sink { TextRecognizer.prepare(languages: $0) }
+            .store(in: &subscriptions)
+        settings.$findTextInImages.sink { [store] in store.recognizesText = $0 }.store(in: &subscriptions)
 
         // Re-register shortcuts when they change; drop them while a shortcut field is recording.
-        Publishers.CombineLatest4(settings.$shelfHotKey, settings.$stackHotKey,
-                                  settings.$pasteNextHotKey, settings.$isRecordingShortcut)
+        Publishers.CombineLatest(Publishers.CombineLatest4(settings.$shelfHotKey, settings.$stackHotKey,
+                                                           settings.$pasteNextHotKey, settings.$captureTextHotKey),
+                                 settings.$isRecordingShortcut)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _, _, _ in self?.registerHotKeys() }
+            .sink { [weak self] _, _ in self?.registerHotKeys() }
             .store(in: &subscriptions)
 
         store.$stackMode
@@ -83,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (settings.shelfHotKey, { [weak self] in self?.shelf.toggle() }),
             (settings.stackHotKey, { [weak self] in self?.toggleStack() }),
             (settings.pasteNextHotKey, { [weak self] in self?.pasteNextFromStack() }),
+            (settings.captureTextHotKey, { [weak self] in self?.captureText() }),
         ]
         for (combo, action) in bindings {
             guard let combo else { continue }
@@ -117,6 +127,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         play("Pop")
     }
 
+    // MARK: - Text from the screen
+
+    @objc private func captureText() {
+        shelf.hide()
+        screenText.start()
+    }
+
     // MARK: - Menu bar
 
     private func setupStatusItem() {
@@ -133,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open PasteClip", #selector(openShelf), settings.shelfHotKey))
         menu.addItem(item(store.stackMode ? "Stop Paste Stack" : "Start Paste Stack", #selector(toggleStack),
                           settings.stackHotKey))
+        menu.addItem(item("Copy Text from Screen", #selector(captureText), settings.captureTextHotKey))
         menu.addItem(.separator())
         menu.addItem(item(store.paused ? "Resume Capturing" : "Pause Capturing", #selector(togglePause), nil))
         if !Paster.isTrusted {

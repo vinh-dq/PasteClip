@@ -37,14 +37,15 @@ final class SettingsWindowController {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, privacy, shortcuts
+    case general, text, privacy, shortcuts
     var id: String { rawValue }
 
-    var title: String { rawValue.capitalized }
+    var title: String { self == .text ? "Text Recognition" : rawValue.capitalized }
 
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .text: return "text.viewfinder"
         case .privacy: return "hand.raised"
         case .shortcuts: return "keyboard"
         }
@@ -103,6 +104,7 @@ struct SettingsView: View {
             Group {
                 switch page.value {
                 case .general: GeneralPage(settings: settings, store: store, sync: sync)
+                case .text: TextRecognitionPage(settings: settings)
                 case .privacy: PrivacyPage(settings: settings)
                 case .shortcuts: ShortcutsPage(settings: settings)
                 }
@@ -262,6 +264,74 @@ private struct RetentionSlider: View {
     }
 }
 
+// MARK: - Text recognition
+
+private struct TextRecognitionPage: View {
+    @ObservedObject var settings: AppSettings
+    @StateObject private var hasAccess = ViewState(ScreenTextCapture.hasAccess)
+    /// English, Vietnamese, Japanese and Chinese first, then the rest by name.
+    private let languages = TextRecognizer.defaultLanguages + TextRecognizer.supportedLanguages
+        .filter { !TextRecognizer.defaultLanguages.contains($0) }
+        .sorted { TextRecognizer.name(of: $0).localizedStandardCompare(TextRecognizer.name(of: $1)) == .orderedAscending }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Copy text from screen") { ShortcutField(combo: $settings.captureTextHotKey, settings: settings) }
+                LabeledContent {
+                    if hasAccess.value {
+                        Label("Allowed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else {
+                        Button("Open System Settings…", action: ScreenTextCapture.openPrivacySettings)
+                    }
+                } label: {
+                    Text("Screen recording")
+                    Text(hasAccess.value
+                         ? "Only the area you pick is read, on this Mac."
+                         : "Needed to read the screen. After turning it on, quit and reopen PasteClip.")
+                }
+                Toggle(isOn: $settings.keepLineBreaks) {
+                    Text("Keep line breaks")
+                    Text("Turn off to join wrapped lines into paragraphs.")
+                }
+                Toggle(isOn: $settings.findTextInImages) {
+                    Text("Find text in copied images")
+                    Text("Copied images can be searched, and pasted as text with \(settings.plainTextModifier.symbol) Return.")
+                }
+            } footer: {
+                Text("Press the shortcut, then drag over the text, or press Space and click a window. Esc cancels.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                ForEach(languages, id: \.self) { language in
+                    Toggle(TextRecognizer.name(of: language), isOn: binding(for: language))
+                        .disabled(settings.textLanguages == [language])
+                }
+            } header: {
+                HStack {
+                    Text("Languages")
+                    Spacer()
+                    Button("Reset to Defaults") { settings.textLanguages = TextRecognizer.defaultLanguages }
+                        .disabled(settings.textLanguages == TextRecognizer.defaultLanguages)
+                }
+                Text("Turn on only the languages you read, for the most accurate text.")
+                    .font(.caption).foregroundStyle(.secondary).fontWeight(.regular)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            hasAccess.value = ScreenTextCapture.hasAccess
+        }
+    }
+
+    private func binding(for language: String) -> Binding<Bool> {
+        Binding(get: { settings.textLanguages.contains(language) }, set: { on in
+            settings.textLanguages.removeAll { $0 == language }
+            if on { settings.textLanguages.append(language) }
+        })
+    }
+}
+
 // MARK: - Privacy
 
 private struct PrivacyPage: View {
@@ -358,6 +428,7 @@ private struct ShortcutsPage: View {
                 LabeledContent("Open PasteClip") { ShortcutField(combo: $settings.shelfHotKey, settings: settings) }
                 LabeledContent("Start or stop paste stack") { ShortcutField(combo: $settings.stackHotKey, settings: settings) }
                 LabeledContent("Paste next from stack") { ShortcutField(combo: $settings.pasteNextHotKey, settings: settings) }
+                LabeledContent("Copy text from screen") { ShortcutField(combo: $settings.captureTextHotKey, settings: settings) }
             } footer: {
                 Text("These work from any app.").font(.caption).foregroundStyle(.secondary)
             }

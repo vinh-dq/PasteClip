@@ -47,6 +47,7 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Search** across text, titles, file paths, source apps and text found in images (Vision), plus filters by type, app and date
 - **Pinboards**: named, coloured collections for clips you want to keep
 - **Paste stack**: copy several things, then paste them one by one in the same order
+- **Copy text from the screen**: ⇧⌘2, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
 - **Preview and edit**: Space for a large preview (Quick Look for images and files), give clips a title, edit text clips
 - **Direct paste** into the current app, or paste as plain text (needs Accessibility permission)
 - **Privacy**: skips clips that password managers mark as private, and anything copied in apps you exclude
@@ -77,13 +78,14 @@ app is signed ad hoc, macOS treats each rebuild as a new app, and asks for permi
 
 ## Global shortcuts
 
-All three can be changed or removed in Settings → Shortcuts.
+All four can be changed or removed in Settings → Shortcuts.
 
 | Key | Action |
 |---|---|
 | ⇧⌘V | Open or close the shelf |
 | ⌃⌘C | Start or stop the paste stack |
 | ⌃⌘V | Paste the next clip from the stack |
+| ⇧⌘2 | Copy text from an area of the screen |
 
 ## Shortcuts in the shelf
 
@@ -137,7 +139,7 @@ Sources/
     ClipStore.swift       Polls NSPasteboard.changeCount, de-duplicates, limits, stack, pinboards, JSON files
     ClipQuery.swift       Search and filters
     AppSettings.swift     Preferences and shortcut definitions (UserDefaults)
-    TextRecognizer.swift  Text in images through Vision
+    TextRecognizer.swift  Text in images through Vision, one pass per writing system, merged line by line
   PasteClipSystem/        Library, OS integration
     HotKey.swift          Global hotkeys through Carbon RegisterEventHotKey
     Paster.swift          Sends ⌘V through CGEvent
@@ -154,6 +156,7 @@ Sources/
     LinkPreviews.swift    Page titles and images for links (LinkPresentation)
     PreviewPopup.swift    Preview popup above the selected card: title, editing, Quick Look
     StackPanel.swift      Floating paste stack list
+    ScreenTextCapture.swift  Copy text from the screen: system area picker, Vision, confirmation toast
     SettingsWindow.swift  Settings window and shortcut recorder
     ViewState.swift       Stand-in for @State (see below)
 Tests/
@@ -172,7 +175,7 @@ views keep local state in a `ViewState` object through `@StateObject` instead. L
 `swift test` doesn't find the Swift Testing macro plugin from the Command Line Tools on its
 own, so `scripts/test.sh` passes its path.
 
-Run `PasteClip --open shelf|preview|general|privacy|shortcuts` (the binary inside the app, or from
+Run `PasteClip --open shelf|preview|general|text|privacy|shortcuts` (the binary inside the app, or from
 `swift build --show-bin-path`) to jump straight to a screen while working on the UI.
 
 ## License

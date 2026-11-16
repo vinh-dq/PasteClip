@@ -32,6 +32,8 @@ public final class ClipStore: ObservableObject {
     public var skipTransient = true
     /// Look for text in image clips with Vision.
     public var recognizesText = true
+    /// Languages to look for in images, most likely first.
+    public var recognitionLanguages = TextRecognizer.defaultLanguages
 
     /// Called after a clip is captured from the pasteboard.
     public var onCapture: ((ClipItem) -> Void)?
@@ -260,7 +262,7 @@ public final class ClipStore: ObservableObject {
 
     private func recognizeText(in item: ClipItem) {
         guard recognizesText, let url = imageURL(for: item) else { return }
-        TextRecognizer.recognize(imageAt: url) { [weak self] text in
+        TextRecognizer.recognize(imageAt: url, languages: recognitionLanguages) { [weak self] text in
             guard let self, let text, let i = self.index(of: item.id) else { return }
             self.items[i].ocrText = text
             self.save()
@@ -353,12 +355,12 @@ public final class ClipStore: ObservableObject {
         notify(saved: [.clip(item.id)], deleted: [])
     }
 
-    /// Adds a text clip typed by the user.
+    /// Adds a text clip typed by the user, or read from the screen.
     @discardableResult
-    public func addText(_ text: String, title: String? = nil) -> ClipItem? {
+    public func addText(_ text: String, title: String? = nil, source: String = "PasteClip") -> ClipItem? {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         var item = ClipItem(kind: ClipKind.detect(text), text: text, sourceBundleID: Bundle.main.bundleIdentifier,
-                            sourceName: "PasteClip")
+                            sourceName: source)
         item.title = title
         return insert(item)
     }
