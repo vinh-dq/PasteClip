@@ -32,6 +32,12 @@ final class TranslationController {
         self.keys = keys
         model = TranslationModel(settings: settings, keys: keys)
         hosting = NSHostingView(rootView: TranslationView(model: model, settings: settings, keys: keys))
+        // Clipped to the glass's rounded corners, so nothing square shows behind them and the
+        // window's shadow takes the same shape.
+        hosting.wantsLayer = true
+        hosting.layer?.cornerRadius = TranslationView.cornerRadius
+        hosting.layer?.cornerCurve = .continuous
+        hosting.layer?.masksToBounds = true
         panel.contentView = hosting
         hosting.rootView.onCopy = { [weak self] in self?.copy() }
         hosting.rootView.onPaste = { [weak self] in self?.paste() }
@@ -177,6 +183,8 @@ final class TranslationController {
         placing = true
         panel.setFrame(frame, display: true)
         placing = false
+        // The shadow follows what's drawn; recomputed once the new size is on screen.
+        DispatchQueue.main.async { [panel] in panel.invalidateShadow() }
     }
 
     private func frame(x: CGFloat, size: NSSize) -> NSRect {
@@ -685,6 +693,7 @@ private struct AppleLanguageDownload: View {
 
 struct TranslationView: View {
     static let width: CGFloat = 552
+    static let cornerRadius: CGFloat = 16
     /// The tallest the translation and the original get; longer text scrolls inside them.
     static let maxTranslationHeight: CGFloat = 240
     static let maxOriginalHeight: CGFloat = 130
@@ -728,7 +737,7 @@ struct TranslationView: View {
             .help("Drag to move")
         }
         .background(WindowDragArea())
-        .background(GlassBackground(cornerRadius: 16))
+        .background(GlassBackground(cornerRadius: Self.cornerRadius))
         .translationTask(model.appleConfiguration) { session in
             await model.translate(with: session)
         }
