@@ -1,0 +1,441 @@
+import AppKit
+import Combine
+import PasteClipCore
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// An app that clips came from, for the filter menu.
+struct SourceApp: Identifiable, Equatable {
+    let id: String
+    let name: String
+}
+
+/// Frame of the selected card while the preview popup is open. Kept outside `ShelfState`
+/// so that scrolling doesn't redraw the whole shelf.
+final class CardFrameTracker: ObservableObject {
+    @Published var frame: CGRect?
+}
+
+/// Which card is selected. Separate from `ShelfState` so that selecting a card only
+/// redraws the card row, not the whole shelf.
+final class SelectionModel: ObservableObject {
+    @Published var index = 0
+    /// Bumped when the row should scroll to the selection (keyboard moves, not clicks).
+    @Published private(set) var scrollRequest = 0
+
+    func select(_ index: Int, scroll: Bool) {
+        if self.index != index { self.index = index }
+        if scroll { scrollRequest += 1 }
+    }
+}
+
+/// UI state for the shelf, shared with the panel controller for keyboard handling.
+final class ShelfState: ObservableObject {
+    @Published var query = ClipQuery()
+    @Published var focusToken = UUID()
+    @Published var previewing = false
+    @Published var editing = false
+    /// Writing a new text clip.
+    @Published var composing = false
+    /// A text field inside the preview or composer has focus, so typing should reach it.
+    @Published var textInputActive = false
+    /// Clips matching the query. Recomputed only when the clips or the query change.
+    @Published private(set) var visible: [ClipItem] = []
+    /// Apps that clips came from, sorted by name.
+    @Published private(set) var sourceApps: [SourceApp] = []
+
+    let cardFrame = CardFrameTracker()
+    let selectionModel = SelectionModel()
+    let store: ClipStore
+    var onPaste: (ClipItem, Bool) -> Void = { _, _ in }
+    var onOpenSettings: () -> Void = {}
+    private var subscriptions = Set<AnyCancellable>()
+
+    init(store: ClipStore) {
+        self.store = store
+        store.$items.combineLatest($query)
+            .sink { [weak self] items, query in self?.visible = query.apply(items) }
+            .store(in: &subscriptions)
+        store.$items
+            .sink { [weak self] items in self?.sourceApps = Self.apps(in: items) }
+            .store(in: &subscriptions)
+    }
+
+    private static func apps(in items: [ClipItem]) -> [SourceApp] {
+        var seen = Set<String>()
+        var apps: [SourceApp] = []
+        for item in items {
+            guard let id = item.sourceBundleID, seen.insert(id).inserted else { continue }
+            apps.append(SourceApp(id: id, name: item.sourceName ?? id))
+        }
+        return apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var selection: Int {
+        get { selectionModel.index }
+        set { selectionModel.select(newValue, scroll: true) }
+    }
+
+    var selectedItem: ClipItem? {
+        visible.indices.contains(selection) ? visible[selection] : nil
+    }
+
+    func move(_ delta: Int) {
+        let count = visible.count
+        guard count > 0 else { return }
+        selection = min(max(selection + delta, 0), count - 1)
+        if editing { editing = false }
+    }
+
+    /// Selecting with the mouse: the card is already in view, so don't scroll.
+    func click(_ index: Int) {
+        selectionModel.select(index, scroll: false)
+        // Assigning a @Published value notifies even when it doesn't change, which would
+        // redraw the whole shelf on every click.
+        if editing { editing = false }
+    }
+
+    /// Steps through History and each pinboard.
+    func cycleBoard(_ delta: Int) {
+        let ids: [UUID?] = [nil] + store.pinboards.map(\.id)
+        let current = ids.firstIndex(of: query.pinboardID) ?? 0
+        query.pinboardID = ids[(current + delta + ids.count) % ids.count]
+        selection = 0
+    }
+
+    func select(board: UUID?) {
+        query.pinboardID = board
+        selection = 0
+    }
+
+    func togglePreview() {
+        if previewing { closePreview() } else if selectedItem != nil { previewing = true }
+    }
+
+    func startComposing() {
+        previewing = false
+        editing = false
+        composing = true
+    }
+
+    func closePreview() {
+        cardFrame.frame = nil
+        previewing = false
+        editing = false
+        composing = false
+        textInputActive = false
+        focusToken = UUID()
+    }
+
+    func reset() {
+        query = ClipQuery()
+        selection = 0
+        closePreview()
+    }
+}
+
+struct ShelfView: View {
+    @ObservedObject var state: ShelfState
+    @ObservedObject var store: ClipStore
+    @ObservedObject var settings: AppSettings
+    @FocusState private var searchFocused: Bool
+    @StateObject private var newBoardShown = ViewState(false)
+    @StateObject private var editingBoard = ViewState<Pinboard?>(nil)
+    /// Tab a card is being dragged over: "history" or a pinboard id.
+    @StateObject private var dropTarget = ViewState<String?>(nil)
+
+    var body: some View {
+        VStack(spacing: 12) {
+            topBar
+            Group {
+                if state.composing {
+                    ComposeView(state: state, store: store)
+                } else {
+                    CardsRow(state: state, selection: state.selectionModel, store: store, settings: settings)
+                }
+            }
+            .transition(.opacity)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 12)
+        .padding(.bottom, 14)
+        .background(GlassBackground(cornerRadius: 26).ignoresSafeArea())
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.05)],
+                                         startPoint: .top, endPoint: .bottom), lineWidth: 1))
+        .onChange(of: state.focusToken) { searchFocused = true }
+        .onChange(of: state.query) { state.selection = 0 }
+        .onAppear { searchFocused = true }
+    }
+
+    // MARK: - Top bar
+
+    /// Filters on the left, search and pinboard tabs in the middle, actions on the right.
+    private var topBar: some View {
+        ZStack {
+            HStack(spacing: 8) {
+                filterMenu
+                Spacer()
+                if store.paused {
+                    Label("Paused", systemImage: "pause.circle.fill").foregroundStyle(.orange)
+                }
+                if store.stackMode {
+                    Label("\(store.stack.count)", systemImage: "square.stack.3d.up.fill")
+                        .foregroundStyle(Color.accentColor)
+                        .help("Paste stack")
+                }
+                moreMenu
+            }
+            HStack(spacing: 6) {
+                searchField
+                boardTabs
+            }
+            .padding(.horizontal, 200) // keep clear of the side controls
+        }
+        .font(.system(size: 13))
+        .frame(height: 30)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search", text: $state.query.text)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+            if !state.query.text.isEmpty {
+                Button { state.query.text = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(width: searchFocused || !state.query.text.isEmpty ? 220 : 130, height: 30)
+        .glassCapsule()
+        .animation(.easeOut(duration: 0.15), value: searchFocused)
+    }
+
+    private var boardTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                tab(title: "History", icon: "clock.arrow.circlepath", color: nil, tint: .accentColor,
+                    selected: state.query.pinboardID == nil, dropOnto: nil) {
+                    state.select(board: nil)
+                }
+                ForEach(store.pinboards) { board in
+                    tab(title: board.name, icon: nil, color: board.color, tint: board.color,
+                        selected: state.query.pinboardID == board.id, dropOnto: board) {
+                        state.select(board: board.id)
+                    }
+                    .contextMenu {
+                        Button("Edit Pinboard…") { editingBoard.value = board }
+                        Button("Delete Pinboard", role: .destructive) {
+                            if state.query.pinboardID == board.id { state.select(board: nil) }
+                            store.deletePinboard(board)
+                        }
+                    }
+                    .popover(isPresented: Binding(get: { editingBoard.value?.id == board.id },
+                                                  set: { if !$0 { editingBoard.value = nil } })) {
+                        PinboardEditor(board: board) { name, color in
+                            var updated = board
+                            updated.name = name
+                            updated.colorIndex = color
+                            store.updatePinboard(updated)
+                            editingBoard.value = nil
+                        }
+                    }
+                }
+                Button { newBoardShown.value = true } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 30, height: 30)
+                        .contentShape(Circle())
+                        .glassCircle()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("New Pinboard")
+                .popover(isPresented: $newBoardShown.value) {
+                    PinboardEditor(board: nil) { name, color in
+                        let board = store.createPinboard(name: name, colorIndex: color)
+                        state.select(board: board.id)
+                        newBoardShown.value = false
+                    }
+                }
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// A tab. Dropping a card on a pinboard tab moves the clip there; dropping it on History
+    /// (`dropOnto` nil) takes it off its pinboard.
+    private func tab(title: String, icon: String?, color: Color?, tint: Color, selected: Bool,
+                     dropOnto board: Pinboard?, action: @escaping () -> Void) -> some View {
+        let key = board?.id.uuidString ?? "history"
+        let targeted = dropTarget.value == key
+        return Button(action: action) {
+            HStack(spacing: 6) {
+                if let icon { Image(systemName: icon) }
+                if let color {
+                    Circle().fill(color).frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(.white.opacity(0.7), lineWidth: 1))
+                }
+                Text(title).lineLimit(1)
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 30)
+            .contentShape(Capsule())
+            .modifier(TabBackground(selected: selected || targeted, tint: tint))
+        }
+        .buttonStyle(.plain)
+        .fontWeight(selected ? .semibold : .regular)
+        .scaleEffect(targeted ? 1.1 : 1)
+        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: targeted)
+        .onDrop(of: [ClipDrag.type], isTargeted: Binding(
+            get: { targeted },
+            set: { dropTarget.value = $0 ? key : (dropTarget.value == key ? nil : dropTarget.value) }
+        )) { providers in
+            ClipDrag.receive(providers) { id in
+                guard let item = store.item(withID: id) else { return }
+                store.setPinboard(item, board)
+            }
+        }
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Picker("Type", selection: $state.query.type) {
+                ForEach(TypeFilter.allCases) { Text($0.title).tag($0) }
+            }
+            Picker("App", selection: $state.query.sourceBundleID) {
+                Text("All Apps").tag(String?.none)
+                ForEach(state.sourceApps) { Text($0.name).tag(String?.some($0.id)) }
+            }
+            Picker("Date", selection: $state.query.dateRange) {
+                ForEach(DateRange.allCases) { Text($0.title).tag($0) }
+            }
+            if state.query.hasFilters {
+                Divider()
+                Button("Reset Filters") {
+                    state.query.type = .all
+                    state.query.sourceBundleID = nil
+                    state.query.dateRange = .any
+                }
+            }
+        } label: {
+            Label(filterSummary, systemImage: state.query.hasFilters
+                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(state.query.hasFilters ? Color.accentColor : Color.secondary)
+    }
+
+    private var filterSummary: String {
+        var parts: [String] = []
+        if state.query.type != .all { parts.append(state.query.type.title) }
+        if let id = state.query.sourceBundleID { parts.append(state.sourceApps.first { $0.id == id }?.name ?? id) }
+        if state.query.dateRange != .any { parts.append(state.query.dateRange.title) }
+        return parts.isEmpty ? "Filter" : parts.joined(separator: " · ")
+    }
+
+    private var moreMenu: some View {
+        Menu {
+            Button("New Text Item") { state.startComposing() }
+                .keyboardShortcut("n")
+            Button(store.stackMode ? "Stop Paste Stack" : "Start Paste Stack") { store.stackMode.toggle() }
+            Divider()
+            Button(store.paused ? "Resume Capturing" : "Pause Capturing") { store.paused.toggle() }
+            Button("Settings…") { state.onOpenSettings() }
+                .keyboardShortcut(",")
+            Divider()
+            Button("Quit PasteClip") { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .glassCircle()
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(.secondary)
+    }
+
+}
+
+/// Writes a new text clip. It lands in the current pinboard when one is selected.
+struct ComposeView: View {
+    @ObservedObject var state: ShelfState
+    let store: ClipStore
+    @FocusState private var focused: Bool
+    @StateObject private var title = ViewState("")
+    @StateObject private var text = ViewState("")
+
+    var body: some View {
+        HStack(spacing: 14) {
+            TextEditor(text: $text.value)
+                .font(.system(size: 13))
+                .scrollContentBackground(.hidden)
+                .padding(10)
+                .focused($focused)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .textBackgroundColor)))
+            VStack(alignment: .leading, spacing: 10) {
+                Text("New Text Item").font(.headline)
+                TextField("Title (optional)", text: $title.value)
+                    .textFieldStyle(.roundedBorder)
+                Text("Saved clips can be pasted like anything you copied.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                HStack {
+                    Button("Cancel") { state.closePreview() }
+                    Spacer()
+                    Button("Save", action: save)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut("s", modifiers: .command)
+                        .disabled(text.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .frame(width: 250)
+        }
+        .onAppear {
+            focused = true
+            state.textInputActive = true
+        }
+    }
+
+    private func save() {
+        let t = title.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let item = store.addText(text.value, title: t.isEmpty ? nil : t) else { return }
+        if let id = state.query.pinboardID, let board = store.pinboard(withID: id) {
+            store.setPinboard(item, board)
+        }
+        state.closePreview()
+        state.selection = 0
+    }
+}
+
+/// Glass behind the selected tab only, so unselected tabs read as plain labels.
+private struct TabBackground: ViewModifier {
+    let selected: Bool
+    let tint: Color
+
+    func body(content: Content) -> some View {
+        if selected { content.glassCapsule(selected: true, tint: tint) } else { content }
+    }
+}
+
+struct VisualEffect: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .hudWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = material
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+    }
+}
