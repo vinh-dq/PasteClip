@@ -41,6 +41,8 @@ final class ShelfController {
     private var subscriptions = Set<AnyCancellable>()
 
     var onPasted: () -> Void = {}
+    var onTranslate: (ClipItem, String?) -> Void = { _, _ in }
+    var onTranslateText: (String) -> Void = { _ in }
 
     var isVisible: Bool { panel.isVisible }
 
@@ -49,7 +51,13 @@ final class ShelfController {
         self.settings = settings
         state = ShelfState(store: store)
         popup = PreviewPopupController(state: state, store: store)
-        state.onPaste = { [weak self] item, plain in self?.paste(item, plainText: plain) }
+        state.onPaste = { [weak self] item, plain in self?.paste([item], plainText: plain) }
+        state.onPasteMany = { [weak self] items, plain in self?.paste(items, plainText: plain) }
+        state.onTranslate = { [weak self] item, target in
+            guard let self else { return }
+            self.hide()
+            self.onTranslate(item, target)
+        }
         state.onOpenSettings = { [weak self] in
             self?.hide()
             openSettings()
@@ -138,8 +146,9 @@ final class ShelfController {
         })
     }
 
-    private func paste(_ item: ClipItem, plainText: Bool) {
-        store.copyToPasteboard(item, plainText: plainText || settings.alwaysPlainText)
+    private func paste(_ items: [ClipItem], plainText: Bool) {
+        guard !items.isEmpty else { return }
+        store.copyToPasteboard(items, plainText: plainText || settings.alwaysPlainText)
         hide()
         guard settings.pasteMode == .frontApp else { return }
         // Without Accessibility permission macOS drops the ⌘V. Ask, rather than failing silently;
@@ -288,7 +297,7 @@ final class ShelfController {
         case 123: state.move(-1); return true                         // ←
         case 124: state.move(1); return true                          // →
         case 36, 76:                                                   // Return
-            if let item = state.selectedItem { paste(item, plainText: isHeld(settings.plainTextModifier, in: event)) }
+            if let item = state.selectedItem { paste([item], plainText: isHeld(settings.plainTextModifier, in: event)) }
             return true
         default: break
         }
@@ -297,6 +306,15 @@ final class ShelfController {
         if cmd, chars == "p", let item = state.selectedItem { store.togglePin(item); return true }
         // Swallow plain typing so it doesn't land in the hidden search field.
         return !cmd
+    }
+
+    /// For the translate shortcut while the shelf is open: closes it and hands over the text of
+    /// the selected clip, or of every selected clip, a line apart.
+    func translateSelection() {
+        let texts = state.selectedItems.compactMap(\.translatableText).filter { !$0.isEmpty }
+        guard !texts.isEmpty else { return NSSound.beep() }
+        hide()
+        onTranslateText(texts.joined(separator: "\n"))
     }
 
     private func handleShelfKey(_ event: NSEvent) -> Bool {
@@ -310,12 +328,17 @@ final class ShelfController {
         // Quick paste: modifier + 1…9 (plus the plain-text modifier, if held).
         if let n = Self.digitKeys.firstIndex(of: event.keyCode), isHeld(settings.quickPasteModifier, in: event) {
             let items = state.visible
-            if items.indices.contains(n) { paste(items[n], plainText: plain && settings.plainTextModifier != settings.quickPasteModifier) }
+            if items.indices.contains(n) { paste([items[n]], plainText: plain && settings.plainTextModifier != settings.quickPasteModifier) }
             return true
         }
 
+        let picking = !state.selectionModel.picked.isEmpty
         switch event.keyCode {
-        case 53: hide(); return true                                   // Esc
+        case 53:                                                       // Esc: clear a selection, then close
+            if picking { state.selectionModel.clearPicks() } else { hide() }
+            return true
+        case 123 where shift && !cmd: state.extend(-1); return true    // ⇧←
+        case 124 where shift && !cmd: state.extend(1); return true     // ⇧→
         case 123: state.move(-1); return true                         // ←
         case 124: state.move(1); return true                          // →
         case 48: state.cycleBoard(shift ? -1 : 1); return true        // Tab / ⇧Tab
@@ -323,10 +346,11 @@ final class ShelfController {
             state.togglePreview()
             return true
         case 36, 76:                                                   // Return / Enter
-            if let item = state.selectedItem { paste(item, plainText: plain) }
+            paste(state.selectedItems, plainText: plain)
             return true
         case 51 where cmd:                                             // ⌘⌫
-            if let item = state.selectedItem { store.delete(item) }
+            store.delete(state.selectedItems)
+            state.selectionModel.clearPicks()
             return true
         default: break
         }
@@ -352,7 +376,11 @@ final class ShelfController {
             if let item = state.selectedItem { store.togglePin(item) }
             return true
         case "c":
-            if let item = state.selectedItem { store.copyToPasteboard(item); hide() }
+            let items = state.selectedItems
+            if !items.isEmpty { store.copyToPasteboard(items); hide() }
+            return true
+        case "a" where state.query.text.isEmpty:
+            state.selectionModel.selectAll(state.visible)
             return true
         case "f":
             state.focusToken = UUID()

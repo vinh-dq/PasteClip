@@ -661,3 +661,41 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
     store.poll()
     #expect(store.items.first?.text == "secret")
 }
+
+@Test func severalClipsPasteTogetherInTheirOrder() {
+    let (store, pb, _) = makeStore()
+    for text in ["one", "two", "three"] {
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        store.poll()
+    }
+    // Newest first: three, two, one.
+    let picked = [store.items[2], store.items[0]]
+    store.copyToPasteboard(picked)
+    #expect(pb.string(forType: .string) == "one\nthree")
+    #expect(store.items.map(\.text) == ["one", "three", "two"])
+    store.poll()
+    #expect(store.items.count == 3)
+
+    // Images can't join text, so each clip goes as its own pasteboard item; as plain text they join.
+    var image = ClipItem(kind: .image)
+    image.ocrText = "text in image"
+    store.copyToPasteboard([store.items[0], image], plainText: true)
+    #expect(pb.string(forType: .string) == "one\ntext in image")
+}
+
+@Test func severalClipsAreDeletedAtOnce() {
+    let (store, pb, _) = makeStore()
+    for text in ["a", "b", "c", "d"] {
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        store.poll()
+    }
+    store.addToStack(store.items[0])
+    var deleted: [SyncRecord] = []
+    store.onLocalChange = { _, gone in deleted += gone }
+    store.delete([store.items[0], store.items[2]])
+    #expect(store.items.map(\.text) == ["c", "a"])
+    #expect(store.stack.isEmpty)
+    #expect(deleted.count == 2)
+}

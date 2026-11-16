@@ -33,6 +33,30 @@ public struct KeyCombo: Codable, Equatable {
     public static let previousPinboard = KeyCombo(keyCode: 123, modifiers: command, keyName: "←")
     // 2 = 19. ⇧⌘3, 4 and 5 are the system's screenshot shortcuts.
     public static let captureText = KeyCombo(keyCode: 19, modifiers: command | shift, keyName: "2")
+    // Space = 49.
+    public static let translate = KeyCombo(keyCode: 49, modifiers: control, keyName: "Space")
+
+    /// Whether macOS has this shortcut turned on for itself (System Settings → Keyboard → Keyboard
+    /// Shortcuts), such as ⌃Space for switching input sources. macOS gets the key first then.
+    public func isUsedBySystem(_ symbolicHotKeys: [String: Any]? = Self.systemHotKeys()) -> Bool {
+        var cocoa = 0
+        if modifiers & Self.shift != 0 { cocoa |= 0x20000 }
+        if modifiers & Self.control != 0 { cocoa |= 0x40000 }
+        if modifiers & Self.option != 0 { cocoa |= 0x80000 }
+        if modifiers & Self.command != 0 { cocoa |= 0x100000 }
+        return (symbolicHotKeys ?? [:]).values.contains { value in
+            guard let entry = value as? [String: Any], (entry["enabled"] as? Bool) == true,
+                  let parameters = (entry["value"] as? [String: Any])?["parameters"] as? [Int], parameters.count >= 3
+            else { return false }
+            // Parameters are the character, the key code and the modifiers; the function-key flag
+            // (0x800000) that arrows and F-keys carry doesn't matter here.
+            return parameters[1] == keyCode && parameters[2] & ~0x800000 == cocoa
+        }
+    }
+
+    public static func systemHotKeys() -> [String: Any]? {
+        UserDefaults(suiteName: "com.apple.symbolichotkeys")?.dictionary(forKey: "AppleSymbolicHotKeys")
+    }
 }
 
 /// What choosing a clip does.
@@ -133,6 +157,33 @@ public final class AppSettings: ObservableObject {
     /// Look for text in copied images so they can be searched and pasted as text.
     @Published public var findTextInImages: Bool { didSet { defaults.set(findTextInImages, forKey: "findTextInImages") } }
 
+    @Published public var translateHotKey: KeyCombo? { didSet { store(translateHotKey, "translateHotKey") } }
+    /// Languages to translate into, in order: text goes into the first one it isn't already in.
+    @Published public var translationTargets: [String] { didSet { defaults.set(translationTargets, forKey: "translationTargets") } }
+    @Published public var translationService: TranslationService {
+        didSet { defaults.set(translationService.rawValue, forKey: "translationService") }
+    }
+    /// The translate shortcut takes the text selected in the front app, if there is any, before the clipboard.
+    @Published public var translateSelection: Bool { didSet { defaults.set(translateSelection, forKey: "translateSelection") } }
+    /// Show a translation of text copied from the screen.
+    @Published public var translateScreenText: Bool { didSet { defaults.set(translateScreenText, forKey: "translateScreenText") } }
+    /// Add copied and pasted translations to history.
+    @Published public var saveTranslations: Bool { didSet { defaults.set(saveTranslations, forKey: "saveTranslations") } }
+    /// The model chosen for each AI service, by its raw value; a missing one uses the service's default.
+    @Published public var translationModels: [String: String] {
+        didSet { defaults.set(translationModels, forKey: "translationModels") }
+    }
+    /// Models each AI provider listed for the user's key, by the service's raw value, newest first.
+    @Published public var translationModelLists: [String: [String]] {
+        didSet { defaults.set(translationModelLists, forKey: "translationModelLists") }
+    }
+    /// Show the original text under its translation. Remembers the last choice made in the panel.
+    @Published public var translationShowsOriginal: Bool {
+        didSet { defaults.set(translationShowsOriginal, forKey: "translationShowsOriginal") }
+    }
+    /// Azure region of the Microsoft Translator key; empty for a global resource.
+    @Published public var microsoftRegion: String { didSet { defaults.set(microsoftRegion, forKey: "microsoftRegion") } }
+
     /// True while a shortcut field is listening, so global hotkeys can step aside. Not saved.
     @Published public var isRecordingShortcut = false
 
@@ -165,6 +216,16 @@ public final class AppSettings: ObservableObject {
         textLanguages = defaults.stringArray(forKey: "textLanguages") ?? TextRecognizer.defaultLanguages
         keepLineBreaks = defaults.object(forKey: "keepLineBreaks") as? Bool ?? true
         findTextInImages = defaults.object(forKey: "findTextInImages") as? Bool ?? true
+        translateHotKey = Self.load(defaults, "translateHotKey", default: .translate)
+        translationTargets = defaults.stringArray(forKey: "translationTargets") ?? Translator.defaultTargets
+        translationService = TranslationService(rawValue: defaults.string(forKey: "translationService") ?? "") ?? .google
+        translateSelection = defaults.object(forKey: "translateSelection") as? Bool ?? true
+        translateScreenText = defaults.bool(forKey: "translateScreenText")
+        saveTranslations = defaults.object(forKey: "saveTranslations") as? Bool ?? true
+        microsoftRegion = defaults.string(forKey: "microsoftRegion") ?? ""
+        translationModelLists = defaults.dictionary(forKey: "translationModelLists") as? [String: [String]] ?? [:]
+        translationShowsOriginal = defaults.object(forKey: "translationShowsOriginal") as? Bool ?? true
+        translationModels = defaults.dictionary(forKey: "translationModels") as? [String: String] ?? [:]
     }
 
     public func resetShortcuts() {
@@ -174,6 +235,7 @@ public final class AppSettings: ObservableObject {
         nextPinboardKey = .nextPinboard
         previousPinboardKey = .previousPinboard
         captureTextHotKey = .captureText
+        translateHotKey = .translate
         quickPasteModifier = .command
         plainTextModifier = .shift
     }

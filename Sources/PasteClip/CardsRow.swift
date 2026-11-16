@@ -35,6 +35,7 @@ struct CardsRow: View {
                 }
                 .background { ScrollFollower(selection: selection, items: items, proxy: proxy) }
             }
+            .overlay(alignment: .bottom) { SelectionHint(selection: selection) }
         }
     }
 
@@ -47,7 +48,8 @@ struct CardsRow: View {
                         renaming: state.renamingID == item.id,
                         onEndRenaming: { if state.renamingID == item.id { state.renamingID = nil } })
             .equatable()
-            .modifier(SelectionRing(selection: selection, index: index, cardFrame: state.previewing ? state.cardFrame : nil))
+            .modifier(SelectionRing(selection: selection, index: index, id: item.id,
+                                    cardFrame: state.previewing ? state.cardFrame : nil))
             .id(item.id)
             .modifier(ReorderBar(reorder: state.reorder, id: item.id, index: index))
             .onDrag {
@@ -66,7 +68,7 @@ struct CardsRow: View {
                     state.onPaste(item, Self.isHeld(settings.plainTextModifier))
                 }
             })
-            .contextMenu { menu(for: item, index: index) }
+            .contextMenu { CardMenu(selection: selection, state: state, store: store, settings: settings, item: item, index: index) }
     }
 
     private static func isHeld(_ key: ModifierKey) -> Bool {
@@ -83,6 +85,36 @@ struct CardsRow: View {
         if !state.query.text.isEmpty || state.query.hasFilters { return "No matches" }
         if state.query.pinboardID != nil { return "This pinboard is empty. Drag a clip onto its tab to add it." }
         return "Nothing copied yet"
+    }
+
+}
+
+/// A card's right-click menu. On a card among several selected ones, it acts on all of them.
+/// It watches the selection itself, as the row doesn't.
+private struct CardMenu: View {
+    @ObservedObject var selection: SelectionModel
+    @ObservedObject var state: ShelfState
+    @ObservedObject var store: ClipStore
+    @ObservedObject var settings: AppSettings
+    let item: ClipItem
+    let index: Int
+
+    var body: some View {
+        let picked = selection.picked.contains(item.id) ? state.selectedItems : []
+        if picked.count > 1 {
+            Button("Paste \(picked.count) Clips") { state.onPasteMany(picked, false) }
+            Button("Paste as Plain Text") { state.onPasteMany(picked, true) }
+            Button("Copy \(picked.count) Clips") { store.copyToPasteboard(picked) }
+            Divider()
+            Button("Add to Paste Stack") { picked.forEach(store.addToStack) }
+            Divider()
+            Button("Delete \(picked.count) Clips", role: .destructive) {
+                store.delete(picked)
+                selection.clearPicks()
+            }
+        } else {
+            menu(for: item, index: index)
+        }
     }
 
     @ViewBuilder
@@ -103,6 +135,15 @@ struct CardsRow: View {
             }
         }
         Button("Rename…") { state.startRenaming(index) }
+        if item.translatableText?.isEmpty == false {
+            Menu("Translate") {
+                Button("Translate") { state.onTranslate(item, nil) }
+                Divider()
+                ForEach(settings.translationTargets, id: \.self) { language in
+                    Button("Into \(Translator.name(of: language))") { state.onTranslate(item, language) }
+                }
+            }
+        }
         Divider()
         Button(item.pinned ? "Unpin" : "Pin") { store.togglePin(item) }
         Menu("Pinboard") {
@@ -131,11 +172,13 @@ struct CardsRow: View {
 private struct SelectionRing: ViewModifier {
     @ObservedObject var selection: SelectionModel
     let index: Int
+    let id: UUID
     /// Set while the preview is open, to report where the selected card is.
     let cardFrame: CardFrameTracker?
 
     func body(content: Content) -> some View {
-        let selected = index == selection.index
+        let selected = selection.isSelected(index, id: id)
+        let focused = index == selection.index
         content
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -145,7 +188,7 @@ private struct SelectionRing: ViewModifier {
             )
             .scaleEffect(selected ? 1 : 0.97)
             .animation(.easeOut(duration: 0.1), value: selected)
-            .background { if selected, let cardFrame { frameReporter(cardFrame) } }
+            .background { if focused, let cardFrame { frameReporter(cardFrame) } }
     }
 
     /// Reports where the selected card is while the preview is open, including while the row scrolls.
@@ -159,6 +202,31 @@ private struct SelectionRing: ViewModifier {
 }
 
 /// Scrolls the row to follow keyboard moves; clicks leave the row where it is.
+/// "3 clips selected" and what can be done with them, while several are selected.
+private struct SelectionHint: View {
+    @ObservedObject var selection: SelectionModel
+
+    var body: some View {
+        let count = selection.picked.count
+        if count > 1 {
+            HStack(spacing: 14) {
+                Text("\(count) clips selected").fontWeight(.semibold)
+                Text("Return  Paste").foregroundStyle(.secondary)
+                Text("⌘C  Copy").foregroundStyle(.secondary)
+                Text("⌘⌫  Delete").foregroundStyle(.secondary)
+                Text("Esc  Clear").foregroundStyle(.secondary)
+            }
+            .font(.system(size: 11.5))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .glassCapsule()
+            .padding(.bottom, 2)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+}
+
 private struct ScrollFollower: View {
     @ObservedObject var selection: SelectionModel
     let items: [ClipItem]

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PasteClip",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("15.0")],
     targets: [
         // Clip model, pasteboard capture and on-disk history. No UI.
         .target(

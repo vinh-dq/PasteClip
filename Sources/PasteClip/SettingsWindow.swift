@@ -10,18 +10,20 @@ final class SettingsWindowController {
     private let settings: AppSettings
     private let store: ClipStore
     private let sync: CloudSync
+    private let keys: APIKeys
     private let page = ViewState(SettingsPage.general)
 
-    init(settings: AppSettings, store: ClipStore, sync: CloudSync) {
+    init(settings: AppSettings, store: ClipStore, sync: CloudSync, keys: APIKeys) {
         self.settings = settings
         self.store = store
         self.sync = sync
+        self.keys = keys
     }
 
     func show(_ initialPage: SettingsPage? = nil) {
         if let initialPage { page.value = initialPage }
         if window == nil {
-            let root = SettingsView(settings: settings, store: store, sync: sync, page: page)
+            let root = SettingsView(settings: settings, store: store, sync: sync, keys: keys, page: page)
             let window = NSWindow(contentViewController: NSHostingController(rootView: root))
             window.title = "PasteClip Settings"
             window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
@@ -37,7 +39,7 @@ final class SettingsWindowController {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, text, privacy, shortcuts
+    case general, text, translation, privacy, shortcuts
     var id: String { rawValue }
 
     var title: String { self == .text ? "Text Recognition" : rawValue.capitalized }
@@ -46,6 +48,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .text: return "text.viewfinder"
+        case .translation: return "character.bubble"
         case .privacy: return "hand.raised"
         case .shortcuts: return "keyboard"
         }
@@ -56,6 +59,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     let store: ClipStore
     @ObservedObject var sync: CloudSync
+    let keys: APIKeys
     @ObservedObject var page: ViewState<SettingsPage>
 
     var body: some View {
@@ -105,6 +109,7 @@ struct SettingsView: View {
                 switch page.value {
                 case .general: GeneralPage(settings: settings, store: store, sync: sync)
                 case .text: TextRecognitionPage(settings: settings)
+                case .translation: TranslationPage(settings: settings, keys: keys)
                 case .privacy: PrivacyPage(settings: settings)
                 case .shortcuts: ShortcutsPage(settings: settings)
                 }
@@ -332,6 +337,457 @@ private struct TextRecognitionPage: View {
     }
 }
 
+// MARK: - Translation
+
+private struct TranslationPage: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var keys: APIKeys
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Translate") { ShortcutField(combo: $settings.translateHotKey, settings: settings) }
+                Toggle(isOn: $settings.translateSelection) {
+                    Text("Translate the selected text")
+                    Text("The shortcut translates what's selected in the app you're using, or the clipboard if nothing is. "
+                         + "The clipboard is left as it was.")
+                }
+                Toggle(isOn: $settings.translateScreenText) {
+                    Text("Translate text copied from the screen")
+                    Text("Show a translation after \(settings.captureTextHotKey?.display ?? "Copy Text from Screen").")
+                }
+                Toggle(isOn: $settings.saveTranslations) {
+                    Text("Save translations to history")
+                    Text("Translations you copy or paste are added to the clip list, from “Translation”. Turn off to only put them on the clipboard.")
+                }
+            } footer: {
+                Text("In a translation, 1–\(min(settings.translationTargets.count, 9)) picks the language, ↑ ↓ the service, Return copies, "
+                     + "⌘Return pastes into the app, ⌘S saves to history, Esc closes. With the shelf open, the shortcut translates the selected clips.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                ForEach(Array(settings.translationTargets.enumerated()), id: \.element) { i, language in
+                    HStack(spacing: 10) {
+                        Text("\(i + 1)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(width: 14)
+                        Text(Translator.name(of: language))
+                        Spacer()
+                        Group {
+                            Button { move(i, by: -1) } label: { Image(systemName: "chevron.up") }.disabled(i == 0)
+                            Button { move(i, by: 1) } label: { Image(systemName: "chevron.down") }
+                                .disabled(i == settings.translationTargets.count - 1)
+                            Button { settings.translationTargets.remove(at: i) } label: { Image(systemName: "minus.circle") }
+                                .disabled(settings.translationTargets.count <= 1)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                Menu("Add Language") {
+                    ForEach(Translator.languages.filter { !settings.translationTargets.contains($0) }, id: \.self) { language in
+                        Button(Translator.name(of: language)) { settings.translationTargets.append(language) }
+                    }
+                }
+                .fixedSize()
+                .disabled(settings.translationTargets.count == Translator.languages.count)
+            } header: {
+                HStack {
+                    Text("Translate into")
+                    Spacer()
+                    Button("Reset to Defaults") { settings.translationTargets = Translator.defaultTargets }
+                        .disabled(settings.translationTargets == Translator.defaultTargets)
+                }
+                Text(orderHint).font(.caption).foregroundStyle(.secondary).fontWeight(.regular)
+            }
+
+            Section {
+                ForEach(TranslationService.allCases.filter { !$0.isAI }) { service in
+                    ServiceRow(service: service, settings: settings, keys: keys)
+                }
+            } header: {
+                Text("Service")
+                Text("Google, Bing and Apple work without setup. The others use your own API key, which is checked before "
+                     + "it's saved and kept in your keychain. After a PasteClip update, macOS may ask once before "
+                     + "reading it; choose Always Allow.")
+                    .font(.caption).foregroundStyle(.secondary).fontWeight(.regular)
+            }
+
+            Section {
+                ForEach(TranslationService.allCases.filter(\.isAI)) { service in
+                    ServiceRow(service: service, settings: settings, keys: keys)
+                }
+            } header: {
+                Text("AI")
+                Text("Language models follow context and keep the tone, but take a few seconds and bill each "
+                     + "translation to your API key. Pick the model when you add the key.")
+                    .font(.caption).foregroundStyle(.secondary).fontWeight(.regular)
+            }
+        }
+    }
+
+    /// "Vietnamese text goes into English; anything else into Vietnamese."
+    private var orderHint: String {
+        let targets = settings.translationTargets
+        guard targets.count > 1 else { return "Everything is translated into \(targets.first.map(Translator.name(of:)) ?? "")." }
+        return "Text goes into the first language it isn't already in: \(Translator.name(of: targets[0])) text into "
+            + "\(Translator.name(of: targets[1])), anything else into \(Translator.name(of: targets[0]))."
+    }
+
+    private func move(_ i: Int, by delta: Int) {
+        let j = i + delta
+        guard settings.translationTargets.indices.contains(j) else { return }
+        settings.translationTargets.swapAt(i, j)
+    }
+}
+
+/// One translation service: pick it, see what it means for your text, and add its key if it needs one.
+private struct ServiceRow: View {
+    let service: TranslationService
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var keys: APIKeys
+    @StateObject private var editingKey = ViewState(false)
+
+    private var selected: Bool { settings.translationService == service }
+    private var hasKey: Bool { keys.hasKey(service) }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Button(action: select) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                        .opacity(service.needsKey && !hasKey ? 0.4 : 1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(service.title)
+                            if service.isAI { Self.badge("AI", .purple) }
+                            badge
+                        }
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if service == .apple {
+                Button("Languages…") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension")!)
+                }
+                .help("Download or remove translation languages in System Settings")
+            } else if service.needsKey {
+                Button(hasKey ? "Edit Key…" : "Add Key…") { editingKey.value = true }
+                    .sheet(isPresented: $editingKey.value) {
+                        APIKeyEditor(service: service, keys: keys, settings: settings) { editingKey.value = false }
+                    }
+            }
+        }
+        .controlSize(.small)
+        .padding(.vertical, 3)
+    }
+
+    /// A service without a key can't be picked yet; choosing it asks for one.
+    private func select() {
+        if service.needsKey && !hasKey { editingKey.value = true } else { settings.translationService = service }
+    }
+
+    private var badge: some View {
+        let (label, color): (String, Color) = switch service {
+        case .google, .bing: ("Free", .green)
+        case .apple: ("Offline", .blue)
+        default: hasKey ? ("Key saved", .green) : ("API key", .secondary)
+        }
+        return Self.badge(label, color)
+    }
+
+    private static func badge(_ label: String, _ color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .foregroundStyle(color)
+            .background(Capsule().fill(color.opacity(0.14)))
+    }
+
+    private var detail: String {
+        switch service {
+        case .google: return "No setup, and strong with Vietnamese. Text is sent to Google through an unofficial API that Google may limit."
+        case .bing: return "No setup, with Microsoft's engine. Text is sent to Microsoft through Bing's web translator, which Microsoft may limit."
+        case .apple: return "Runs on this Mac, so text never leaves it. Each language downloads the first time it's used."
+        case .googleCloud: return "Google's official API, billed to your Google Cloud account after a free monthly allowance."
+        case .deepL: return "Very natural wording. The DeepL API Free plan has a monthly allowance."
+        case .microsoft: return "Microsoft's Azure Translator, with a free monthly allowance."
+        default:
+            let model = settings.translationModels[service.rawValue].flatMap { $0.isEmpty ? nil : $0 } ?? service.defaultModel ?? ""
+            let maker = ["openAI": "OpenAI", "claude": "Anthropic", "gemini": "Google", "deepSeek": "DeepSeek", "grok": "xAI"][service.rawValue] ?? ""
+            return "Uses \(model). Text is sent to \(maker) with your API key."
+        }
+    }
+}
+
+/// A sheet on the Settings window for a service's API key (and region or model). A sheet stays
+/// open while you switch to another app to copy the key, and keeps what you've typed.
+/// The key is saved only after a test translation works.
+private struct APIKeyEditor: View {
+    let service: TranslationService
+    @ObservedObject var keys: APIKeys
+    @ObservedObject var settings: AppSettings
+    let close: () -> Void
+    @StateObject private var draft: ViewState<String>
+    @StateObject private var model: ViewState<String>
+    @StateObject private var showsKey = ViewState(false)
+    @StateObject private var testing = ViewState(false)
+    @StateObject private var error = ViewState<String?>(nil)
+    @StateObject private var refreshing = ViewState(false)
+    @FocusState private var focus: Field?
+
+    private enum Field { case key, region, model }
+
+    init(service: TranslationService, keys: APIKeys, settings: AppSettings, close: @escaping () -> Void) {
+        self.service = service
+        self.keys = keys
+        self.settings = settings
+        self.close = close
+        // A saved key isn't put back in the field: it shows as dots, and stays unless a new one is typed.
+        _draft = StateObject(wrappedValue: ViewState(""))
+        let saved = settings.translationModels[service.rawValue] ?? ""
+        _model = StateObject(wrappedValue: ViewState(saved.isEmpty ? service.defaultModel ?? "" : saved))
+    }
+
+    private var hasKey: Bool { keys.hasKey(service) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: service.isAI ? "sparkles" : "key.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(service.isAI ? Color.purple : Color.accentColor))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(service.title) API Key").font(.title3.weight(.semibold))
+                    Text(hasKey ? "Your key is saved. Change the key or the model, then test again to save the change."
+                                : "PasteClip translates “Hello” with the key to check it, then keeps it in your keychain.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(20)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 16) {
+                row("API key") {
+                    Group {
+                        if showsKey.value {
+                            TextField(keyPlaceholder, text: $draft.value)
+                        } else {
+                            SecureField(keyPlaceholder, text: $draft.value)
+                        }
+                    }
+                    .focused($focus, equals: .key)
+                    .roomyField(focused: focus == .key)
+                    .onSubmit(test)
+                } accessory: {
+                    Button { showsKey.value.toggle() } label: {
+                        Image(systemName: showsKey.value ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(showsKey.value ? "Hide the key" : "Show the key")
+                } note: {
+                    if hasKey {
+                        let kept = draft.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        Label(kept ? "Key saved in your keychain. Paste a new one only to replace it." : "New key — Test & Save to keep it",
+                              systemImage: kept ? "checkmark.circle.fill" : "pencil.circle")
+                            .foregroundStyle(kept ? Color.green : Color.orange)
+                    }
+                }
+                if service == .microsoft {
+                    row("Region") {
+                        TextField("southeastasia", text: $settings.microsoftRegion)
+                            .focused($focus, equals: .region)
+                            .roomyField(focused: focus == .region, monospaced: false)
+                    } accessory: {
+                        EmptyView()
+                    } note: {
+                        Text("The Azure region of your Translator resource. Leave empty for a global one.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let defaultModel = service.defaultModel {
+                    row("Model") {
+                        TextField(defaultModel, text: $model.value)
+                            .focused($focus, equals: .model)
+                            .roomyField(focused: focus == .model)
+                            .onSubmit(test)
+                    } accessory: {
+                        Menu {
+                            Button("\(defaultModel) (default)") { model.value = defaultModel }
+                            Divider()
+                            let listed = settings.translationModelLists[service.rawValue] ?? []
+                            Section(listed.isEmpty ? "Suggested" : "From \(service.title)") {
+                                ForEach((listed.isEmpty ? service.suggestedModels : listed).filter { $0 != defaultModel }, id: \.self) { name in
+                                    Button(name) { model.value = name }
+                                }
+                            }
+                            Divider()
+                            Button("Update List from \(service.title)", action: refreshModels)
+                                .disabled(!canTest || refreshing.value)
+                        } label: {
+                            Image(systemName: refreshing.value ? "arrow.triangle.2.circlepath" : "list.bullet")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Pick a model")
+                    } note: {
+                        Text("\(defaultModel) is the default: fast and cheap. Pick another from the list, or type any model name \(service.title) offers. "
+                             + "The list comes from \(service.title) when the key is saved; Update List in the menu fetches it again.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(20)
+
+            Group {
+                if testing.value {
+                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Testing the key…") }
+                        .foregroundStyle(.secondary)
+                } else if let message = error.value {
+                    Label(message, systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 20)
+            .padding(.bottom, testing.value || error.value != nil ? 16 : 0)
+
+            Divider()
+
+            HStack {
+                if let url = service.keyURL {
+                    Link(destination: url) { Label("Get a Key", systemImage: "arrow.up.right.square") }
+                }
+                Spacer()
+                if hasKey {
+                    Button("Remove Key", role: .destructive) {
+                        keys.set("", for: service)
+                        if settings.translationService == service { settings.translationService = .google }
+                        close()
+                    }
+                }
+                Button("Cancel", action: close).keyboardShortcut(.cancelAction)
+                Button("Test & Save", action: test)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canTest || testing.value)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+        }
+        .frame(width: 560)
+        .onAppear { focus = .key }
+    }
+
+    /// A labelled field: the label on the left, the field filling the width, a button beside it
+    /// (each row keeps the same room for one, so the fields line up), and a note underneath.
+    private func row<Field: View, Accessory: View, Note: View>(
+        _ label: String, @ViewBuilder field: () -> Field, @ViewBuilder accessory: () -> Accessory,
+        @ViewBuilder note: () -> Note
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(label).frame(width: 64, alignment: .trailing)
+                field().frame(maxWidth: .infinity)
+                accessory().frame(width: 28)
+            }
+            note()
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 74)
+                .padding(.trailing, 38)
+        }
+    }
+
+    private var keyPlaceholder: String {
+        hasKey ? String(repeating: "•", count: 24) : "Paste your API key"
+    }
+
+    /// A key was typed, or one is saved. Doesn't read the keychain, so drawing the sheet never asks for the password.
+    private var canTest: Bool {
+        hasKey || !draft.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The key typed in, or else the saved one, read from the keychain.
+    private var keyToTest: String {
+        let typed = draft.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty ? keys.key(for: service) : typed
+    }
+
+    /// Asks the provider which models the key can use, for the menu.
+    private func refreshModels() {
+        let translator = WebTranslator(service: service, key: keyToTest)
+        refreshing.value = true
+        error.value = nil
+        Task { @MainActor in
+            do {
+                let names = try await translator.models()
+                if !names.isEmpty { settings.translationModelLists[service.rawValue] = names }
+            } catch {
+                self.error.value = "Couldn't get the list of models: \(error.localizedDescription)"
+            }
+            refreshing.value = false
+        }
+    }
+
+    private func test() {
+        let key = keyToTest
+        guard !key.isEmpty, !testing.value else { return }
+        let model = model.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translator = WebTranslator(service: service, key: key, region: settings.microsoftRegion, model: model)
+        testing.value = true
+        error.value = nil
+        Task { @MainActor in
+            do {
+                _ = try await translator.translate("Hello", to: "vi")
+                guard keys.set(key, for: service) else {
+                    self.error.value = "The key works, but PasteClip couldn't save it in your keychain. Try again, and allow access if macOS asks."
+                    testing.value = false
+                    return
+                }
+                // The default is stored as empty, so a newer default reaches it later.
+                if let defaultModel = service.defaultModel {
+                    settings.translationModels[service.rawValue] = model == defaultModel ? "" : model
+                }
+                settings.translationService = service
+                close()
+                // A fresh list of models for the menu, after the sheet has closed.
+                if service.isAI, let names = try? await WebTranslator(service: service, key: key).models(), !names.isEmpty {
+                    settings.translationModelLists[service.rawValue] = names
+                }
+            } catch {
+                self.error.value = error.localizedDescription
+            }
+            testing.value = false
+        }
+    }
+}
+
+private extension View {
+    /// A tall text field with room around the text, for keys and model names.
+    func roomyField(focused: Bool, monospaced: Bool = true) -> some View {
+        textFieldStyle(.plain)
+            .font(.system(size: 13, design: monospaced ? .monospaced : .default))
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(focused ? Color.accentColor : Color.primary.opacity(0.18), lineWidth: focused ? 2 : 1))
+    }
+}
+
 // MARK: - Privacy
 
 private struct PrivacyPage: View {
@@ -429,6 +885,7 @@ private struct ShortcutsPage: View {
                 LabeledContent("Start or stop paste stack") { ShortcutField(combo: $settings.stackHotKey, settings: settings) }
                 LabeledContent("Paste next from stack") { ShortcutField(combo: $settings.pasteNextHotKey, settings: settings) }
                 LabeledContent("Copy text from screen") { ShortcutField(combo: $settings.captureTextHotKey, settings: settings) }
+                LabeledContent("Translate selection or clipboard") { ShortcutField(combo: $settings.translateHotKey, settings: settings) }
             } footer: {
                 Text("These work from any app.").font(.caption).foregroundStyle(.secondary)
             }
@@ -474,6 +931,12 @@ private struct ShortcutField: View {
             Text(recording.value ? "Type shortcut…" : combo?.display ?? "None")
                 .foregroundStyle(recording.value || combo == nil ? Color.secondary : Color.primary)
                 .frame(maxWidth: .infinity)
+            if let combo, !recording.value, combo.isUsedBySystem() {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help("macOS uses \(combo.display) too, so it won't reach PasteClip. Turn it off in System Settings → "
+                          + "Keyboard → Keyboard Shortcuts, or pick another shortcut.")
+            }
             if combo != nil, !recording.value {
                 Button { combo = nil } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)

@@ -19,13 +19,52 @@ final class CardFrameTracker: ObservableObject {
 /// Which card is selected. Separate from `ShelfState` so that selecting a card only
 /// redraws the card row, not the whole shelf.
 final class SelectionModel: ObservableObject {
+    /// The card the keyboard is on.
     @Published var index = 0
+    /// Clips picked with ⇧ or ⌘, by id. Empty when only the card at `index` is selected.
+    @Published private(set) var picked: Set<UUID> = []
     /// Bumped when the row should scroll to the selection (keyboard moves, not clicks).
     @Published private(set) var scrollRequest = 0
+    /// Where a ⇧ range starts: the last card selected without ⇧.
+    private var anchor = 0
 
+    /// Selects just this card.
     func select(_ index: Int, scroll: Bool) {
         if self.index != index { self.index = index }
+        if !picked.isEmpty { picked = [] }
+        anchor = index
         if scroll { scrollRequest += 1 }
+    }
+
+    /// ⇧: selects every card from the anchor to this one.
+    func extend(to index: Int, in items: [ClipItem], scroll: Bool) {
+        guard items.indices.contains(index) else { return }
+        let anchor = min(self.anchor, items.count - 1)
+        picked = Set(items[min(anchor, index)...max(anchor, index)].map(\.id))
+        if self.index != index { self.index = index }
+        if scroll { scrollRequest += 1 }
+    }
+
+    /// ⌘: adds this card to the selection, or takes it out.
+    func toggle(_ index: Int, in items: [ClipItem]) {
+        guard items.indices.contains(index) else { return }
+        if picked.isEmpty, items.indices.contains(self.index) { picked = [items[self.index].id] }
+        let id = items[index].id
+        if picked.contains(id) { picked.remove(id) } else { picked.insert(id) }
+        if self.index != index { self.index = index }
+        anchor = index
+    }
+
+    func selectAll(_ items: [ClipItem]) {
+        picked = Set(items.map(\.id))
+    }
+
+    func clearPicks() {
+        if !picked.isEmpty { picked = [] }
+    }
+
+    func isSelected(_ index: Int, id: UUID) -> Bool {
+        picked.isEmpty ? index == self.index : picked.contains(id)
     }
 }
 
@@ -80,6 +119,10 @@ final class ShelfState: ObservableObject {
     let selectionModel = SelectionModel()
     let store: ClipStore
     var onPaste: (ClipItem, Bool) -> Void = { _, _ in }
+    /// Pastes several clips together.
+    var onPasteMany: ([ClipItem], Bool) -> Void = { _, _ in }
+    /// Translates a clip, into the given language or the first one it isn't in.
+    var onTranslate: (ClipItem, String?) -> Void = { _, _ in }
     var onOpenSettings: () -> Void = {}
     private var subscriptions = Set<AnyCancellable>()
 
@@ -87,6 +130,10 @@ final class ShelfState: ObservableObject {
         self.store = store
         store.$items.combineLatest($query)
             .sink { [weak self] items, query in self?.visible = query.apply(items) }
+            .store(in: &subscriptions)
+        // A new search, filter or tab starts a new selection.
+        $query.removeDuplicates()
+            .sink { [weak self] _ in self?.selectionModel.clearPicks() }
             .store(in: &subscriptions)
         store.$items
             .sink { [weak self] items in self?.sourceApps = Self.apps(in: items) }
@@ -112,6 +159,20 @@ final class ShelfState: ObservableObject {
         visible.indices.contains(selection) ? visible[selection] : nil
     }
 
+    /// The clips picked with ⇧ or ⌘, in the row's order, or else the selected one.
+    var selectedItems: [ClipItem] {
+        let picked = selectionModel.picked
+        let items = picked.isEmpty ? [] : visible.filter { picked.contains($0.id) }
+        return items.isEmpty ? [selectedItem].compactMap { $0 } : items
+    }
+
+    /// ⇧← / ⇧→: grows or shrinks the selection one card at a time.
+    func extend(_ delta: Int) {
+        guard !visible.isEmpty else { return }
+        selectionModel.extend(to: min(max(selection + delta, 0), visible.count - 1), in: visible, scroll: true)
+        if editing { editing = false }
+    }
+
     func move(_ delta: Int) {
         let count = visible.count
         guard count > 0 else { return }
@@ -121,7 +182,14 @@ final class ShelfState: ObservableObject {
 
     /// Selecting with the mouse: the card is already in view, so don't scroll.
     func click(_ index: Int) {
-        selectionModel.select(index, scroll: false)
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            selectionModel.toggle(index, in: visible)
+        } else if flags.contains(.shift) {
+            selectionModel.extend(to: index, in: visible, scroll: false)
+        } else {
+            selectionModel.select(index, scroll: false)
+        }
         // Assigning a @Published value notifies even when it doesn't change, which would
         // redraw the whole shelf on every click.
         if editing { editing = false }

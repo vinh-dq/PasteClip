@@ -8,22 +8,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let settings = AppSettings()
     private let store = ClipStore()
     private lazy var sync = CloudSync(store: store)
-    private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, sync: sync)
+    private lazy var apiKeys = APIKeys(directory: store.directory)
+    private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, sync: sync, keys: apiKeys)
     private lazy var shelf = ShelfController(store: store, settings: settings) { [weak self] in
         self?.settingsWindow.show()
     }
     private lazy var stackPanel = StackController(store: store, settings: settings)
     private lazy var screenText = ScreenTextCapture(store: store, settings: settings)
+    private lazy var translation = TranslationController(store: store, settings: settings, keys: apiKeys)
     private var statusItem: NSStatusItem!
     private var hotKeys: [HotKey] = []
     private var subscriptions = Set<AnyCancellable>()
+    private var lastWarmUp = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.mainMenu = Self.editMenu()
         bindSettings()
         store.onCapture = { [weak self] _ in self?.play("Tink") }
         shelf.onPasted = { [weak self] in self?.play("Pop") }
         screenText.onCopied = { [weak self] in self?.play("Tink") }
+        screenText.onTranslate = { [weak self] text in self?.translation.show(text) }
+        shelf.onTranslateText = { [weak self] text in self?.translation.show(text) }
+        shelf.onTranslate = { [weak self] item, target in
+            if let text = item.translatableText { self?.translation.show(text, target: target) }
+        }
         store.start()
+        // Moves keys left in a plain file by earlier builds into the keychain, without reading it otherwise.
+        _ = apiKeys
         setupStatusItem()
 
         if !Paster.isTrusted { Paster.requestTrust() }
@@ -31,9 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Lets you jump straight to a screen while working on the UI:
-    /// `PasteClip --open shelf|preview|general|text|privacy|shortcuts`.
+    /// `PasteClip --open shelf|preview|general|text|translation|privacy|shortcuts`, or `--translate "some text"`.
     private func openFromArguments() {
         let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--translate"), args.indices.contains(i + 1) {
+            translation.show(args[i + 1])
+            return
+        }
         guard let i = args.firstIndex(of: "--open"), args.indices.contains(i + 1) else { return }
         if args[i + 1] == "shelf" {
             shelf.show()
@@ -61,13 +76,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { TextRecognizer.prepare(languages: $0) }
             .store(in: &subscriptions)
         settings.$findTextInImages.sink { [store] in store.recognizesText = $0 }.store(in: &subscriptions)
+        // The connection to the translation service (and Bing's token) is ready before it's needed:
+        // at launch, after picking a service, and every 10 minutes for Bing, whose token lasts an hour.
+        settings.$translationService
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.warmUpTranslation(force: true) }
+            .store(in: &subscriptions)
+        Timer.publish(every: 600, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in
+                if self?.settings.translationService == .bing { self?.warmUpTranslation(force: true) }
+            }
+            .store(in: &subscriptions)
 
         // Re-register shortcuts when they change; drop them while a shortcut field is recording.
-        Publishers.CombineLatest(Publishers.CombineLatest4(settings.$shelfHotKey, settings.$stackHotKey,
-                                                           settings.$pasteNextHotKey, settings.$captureTextHotKey),
-                                 settings.$isRecordingShortcut)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _ in self?.registerHotKeys() }
+        let shortcuts = [settings.$shelfHotKey, settings.$stackHotKey, settings.$pasteNextHotKey,
+                         settings.$captureTextHotKey, settings.$translateHotKey]
+        Publishers.MergeMany(shortcuts.map { $0.map { _ in () }.eraseToAnyPublisher() }
+                             + [settings.$isRecordingShortcut.map { _ in () }.eraseToAnyPublisher()])
+            .debounce(for: .milliseconds(10), scheduler: DispatchQueue.main)
+            .sink { [weak self] in self?.registerHotKeys() }
             .store(in: &subscriptions)
 
         store.$stackMode
@@ -93,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (settings.stackHotKey, { [weak self] in self?.toggleStack() }),
             (settings.pasteNextHotKey, { [weak self] in self?.pasteNextFromStack() }),
             (settings.captureTextHotKey, { [weak self] in self?.captureText() }),
+            (settings.translateHotKey, { [weak self] in self?.translate() }),
         ]
         for (combo, action) in bindings {
             guard let combo else { continue }
@@ -134,6 +162,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         screenText.start()
     }
 
+    // MARK: - Translation
+
+    /// With the shelf open, translates the clips selected there; otherwise the text selected in
+    /// the front app, or the clipboard.
+    @objc private func translate() {
+        // Opens the connection while the selected text is read, so the request doesn't wait for it.
+        warmUpTranslation(force: false)
+        if shelf.isVisible { return shelf.translateSelection() }
+        translation.translateSelectionOrClipboard()
+    }
+
+    /// The app shows no menu bar, but text fields (Settings, the key popover) only get ⌘X, ⌘C, ⌘V,
+    /// ⌘A and ⌘Z through the key equivalents of an Edit menu in the main menu.
+    private static func editMenu() -> NSMenu {
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let item = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        item.submenu = edit
+        let main = NSMenu()
+        main.addItem(NSMenuItem(title: "PasteClip", action: nil, keyEquivalent: ""))
+        main.addItem(item)
+        return main
+    }
+
+    /// Opens the connection to the chosen web service. Skipped if done in the last 20 seconds,
+    /// when the connection is still open, unless `force`.
+    private func warmUpTranslation(force: Bool) {
+        let service = settings.translationService
+        guard service != .apple, force || Date().timeIntervalSince(lastWarmUp) > 20 else { return }
+        lastWarmUp = Date()
+        Task { await WebTranslator(service: service).warmUp() }
+    }
+
     // MARK: - Menu bar
 
     private func setupStatusItem() {
@@ -151,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item(store.stackMode ? "Stop Paste Stack" : "Start Paste Stack", #selector(toggleStack),
                           settings.stackHotKey))
         menu.addItem(item("Copy Text from Screen", #selector(captureText), settings.captureTextHotKey))
+        menu.addItem(item("Translate Selection or Clipboard", #selector(translate), settings.translateHotKey))
         menu.addItem(.separator())
         menu.addItem(item(store.paused ? "Resume Capturing" : "Pause Capturing", #selector(togglePause), nil))
         if !Paster.isTrusted {
@@ -168,8 +236,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func item(_ title: String, _ action: Selector, _ combo: KeyCombo?, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
-        if let combo, combo.keyName.count == 1 {
-            item.keyEquivalent = combo.keyName.lowercased()
+        if let combo, combo.keyName.count == 1 || combo.keyName == "Space" {
+            item.keyEquivalent = combo.keyName == "Space" ? " " : combo.keyName.lowercased()
             var mask: NSEvent.ModifierFlags = []
             if combo.modifiers & KeyCombo.command != 0 { mask.insert(.command) }
             if combo.modifiers & KeyCombo.shift != 0 { mask.insert(.shift) }

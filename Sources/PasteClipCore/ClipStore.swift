@@ -34,6 +34,11 @@ public final class ClipStore: ObservableObject {
     public var recognizesText = true
     /// Languages to look for in images, most likely first.
     public var recognitionLanguages = TextRecognizer.defaultLanguages
+    /// While true, clipboard changes are let go by, as when PasteClip copies the selection in
+    /// another app to read it and then puts the clipboard back.
+    public var captureSuspended = false {
+        didSet { if !captureSuspended { lastChangeCount = pasteboard.changeCount } }
+    }
 
     /// Called after a clip is captured from the pasteboard.
     public var onCapture: ((ClipItem) -> Void)?
@@ -78,7 +83,7 @@ public final class ClipStore: ObservableObject {
     func poll() {
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
-        guard !paused else { return }
+        guard !paused, !captureSuspended else { return }
 
         let types = pasteboard.types ?? []
         // Respect password managers and other apps that mark data as private or temporary
@@ -355,6 +360,62 @@ public final class ClipStore: ObservableObject {
         notify(saved: [.clip(item.id)], deleted: [])
     }
 
+    /// Puts several clips on the pasteboard to paste together, in the order given. Text goes as
+    /// one text, a line apart (plain: their formatting doesn't join up); files go together; a mix
+    /// with images goes as one pasteboard item per clip. Plain text also turns images into the text
+    /// found in them and files into their paths. The clips move to the top, keeping their order.
+    public func copyToPasteboard(_ items: [ClipItem], plainText: Bool = false) {
+        guard items.count > 1 else {
+            if let item = items.first { copyToPasteboard(item, plainText: plainText) }
+            return
+        }
+        pasteboard.clearContents()
+        let texts = items.map { item -> String? in
+            switch item.kind {
+            case .text, .link, .color: return item.text
+            case .image: return plainText ? item.ocrText : nil
+            case .file: return plainText ? item.contentKey : nil
+            }
+        }
+        if !plainText, items.allSatisfy({ $0.kind == .file }) {
+            pasteboard.writeObjects(items.flatMap { $0.filePaths ?? [] }.map { URL(fileURLWithPath: $0) as NSURL })
+        } else if texts.allSatisfy({ $0 != nil }) {
+            pasteboard.setString(texts.compactMap { $0 }.joined(separator: "\n"), forType: .string)
+        } else {
+            pasteboard.writeObjects(items.compactMap { item -> NSPasteboardItem? in
+                let entry = NSPasteboardItem()
+                switch item.kind {
+                case .text, .link, .color: entry.setString(item.text ?? "", forType: .string)
+                case .image:
+                    guard let png = image(for: item)?.pngData else { return nil }
+                    entry.setData(png, forType: .png)
+                case .file:
+                    guard let path = item.filePaths?.first else { return nil }
+                    entry.setString(URL(fileURLWithPath: path).absoluteString, forType: .fileURL)
+                }
+                return entry
+            })
+        }
+        lastChangeCount = pasteboard.changeCount
+        let now = Date()
+        for (n, item) in items.enumerated().reversed() {
+            guard let i = index(of: item.id) else { continue }
+            var moved = self.items.remove(at: i)
+            // A moment apart, so sorting by date keeps them in this order.
+            moved.date = now.addingTimeInterval(-Double(n) / 1000)
+            self.items.insert(moved, at: 0)
+        }
+        save()
+        notify(saved: items.map { .clip($0.id) }, deleted: [])
+    }
+
+    /// Puts text on the clipboard without adding it to history.
+    public func copyWithoutSaving(_ text: String) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        lastChangeCount = pasteboard.changeCount
+    }
+
     /// Adds a text clip typed by the user, or read from the screen.
     @discardableResult
     public func addText(_ text: String, title: String? = nil, source: String = "PasteClip") -> ClipItem? {
@@ -411,12 +472,19 @@ public final class ClipStore: ObservableObject {
     }
 
     public func delete(_ item: ClipItem) {
-        guard let current = self.item(withID: item.id) else { return }
-        deleteFiles(of: current)
-        items.removeAll { $0.id == item.id }
-        stack.removeAll { $0 == item.id }
+        delete([item])
+    }
+
+    /// Deletes several clips at once, saving once.
+    public func delete(_ items: [ClipItem]) {
+        let ids = Set(items.map(\.id))
+        let current = self.items.filter { ids.contains($0.id) }
+        guard !current.isEmpty else { return }
+        current.forEach(deleteFiles(of:))
+        self.items.removeAll { ids.contains($0.id) }
+        stack.removeAll { ids.contains($0) }
         save()
-        notify(saved: [], deleted: [.clip(item.id)])
+        notify(saved: [], deleted: current.map { .clip($0.id) })
     }
 
     public func clearHistory() {

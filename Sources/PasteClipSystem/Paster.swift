@@ -15,7 +15,16 @@ public enum Paster {
     public static func pasteIntoFrontApp(after delay: TimeInterval = 0) {
         guard isTrusted else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            whenModifiersReleased(deadline: Date().addingTimeInterval(1), postCommandV)
+            whenModifiersReleased(deadline: Date().addingTimeInterval(1)) { postCommand(key: 9) } // V
+        }
+    }
+
+    /// Sends ⌘C to the front app once modifier keys are let go, then calls `completion`.
+    public static func copyInFrontApp(then completion: @escaping () -> Void) {
+        guard isTrusted else { return completion() }
+        whenModifiersReleased(deadline: Date().addingTimeInterval(1)) {
+            postCommand(key: 8) // C
+            completion()
         }
     }
 
@@ -29,11 +38,10 @@ public enum Paster {
         }
     }
 
-    private static func postCommandV() {
+    private static func postCommand(key: CGKeyCode) {
         let source = CGEventSource(stateID: .combinedSessionState)
-        let vKey: CGKeyCode = 9
-        let down = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
         down?.flags = .maskCommand
         up?.flags = .maskCommand
         down?.post(tap: .cgAnnotatedSessionEventTap)

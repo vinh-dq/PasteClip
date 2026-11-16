@@ -11,6 +11,8 @@ final class ScreenTextCapture {
     private var running = false
     /// Called after the text is on the clipboard.
     var onCopied: (() -> Void)?
+    /// Shows a translation of the text, when that's turned on.
+    var onTranslate: ((String) -> Void)?
 
     init(store: ClipStore, settings: AppSettings) {
         self.store = store
@@ -74,6 +76,7 @@ final class ScreenTextCapture {
         }
         store.copyToPasteboard(item)
         onCopied?()
+        if settings.translateScreenText, let onTranslate { return onTranslate(text) }
         let lines = text.split(separator: "\n").count
         toast.show(lines > 1 ? "Copied \(lines) lines of text" : "Copied text", symbol: "checkmark.circle.fill",
                    preview: text)
@@ -101,7 +104,7 @@ final class ScreenTextCapture {
 }
 
 /// A short message near the bottom of the screen with the mouse, that fades on its own.
-private final class Toast {
+final class Toast {
     private lazy var panel: NSPanel = {
         let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.level = .statusBar
@@ -116,7 +119,9 @@ private final class Toast {
     var sharingType = NSWindow.SharingType.readOnly
 
     func show(_ message: String, symbol: String, preview: String? = nil) {
-        let view = NSHostingView(rootView: ToastView(message: message, symbol: symbol, preview: preview.map(Self.excerpt)))
+        let excerpt = preview.map(Self.excerpt)
+        let view = NSHostingView(rootView: ToastView(message: message, symbol: symbol, preview: excerpt,
+                                                     previewWidth: excerpt.map(Self.width) ?? 0))
         let size = view.fittingSize
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
         let visible = screen.visibleFrame
@@ -143,12 +148,24 @@ private final class Toast {
     private static func excerpt(_ text: String) -> String {
         text.split(separator: "\n").prefix(2).map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
     }
+
+    /// Width for the excerpt: as wide as its longest line, up to the toast's limit. Text given
+    /// only a maximum width is measured on one line, so a line that wraps got cut off.
+    private static func width(of excerpt: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: ToastView.previewFontSize)
+        let widest = excerpt.split(separator: "\n").map { (String($0) as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+        return min(ceil(widest) + 2, ToastView.maxPreviewWidth)
+    }
 }
 
 private struct ToastView: View {
     let message: String
     let symbol: String
     var preview: String?
+    var previewWidth: CGFloat = 0
+
+    static let previewFontSize: CGFloat = 12
+    static let maxPreviewWidth: CGFloat = 360
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -158,11 +175,11 @@ private struct ToastView: View {
             }
             if let preview {
                 Text(preview)
-                    .font(.system(size: 12))
+                    .font(.system(size: Self.previewFontSize))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.tail)
-                    .frame(maxWidth: 360, alignment: .leading)
+                    .frame(width: previewWidth, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

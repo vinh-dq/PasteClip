@@ -13,15 +13,13 @@ one shortcut: press **⇧⌘V**, pick a card, and it is pasted into the app you 
 2. Open it and drag **PasteClip** into **Applications**.
 3. Open PasteClip from Applications. It runs in the menu bar (there is no Dock icon).
 
-Requires macOS 14 Sonoma or later, on Apple silicon or Intel.
+Requires macOS 15 Sequoia or later, on Apple silicon or Intel.
 
 ### First launch
 
-PasteClip is not notarized by Apple yet, so macOS blocks the first launch:
-
-- **macOS 15 and later:** open the app once and close the warning, then go to
-  **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
-- **macOS 14:** right-click PasteClip in Applications, choose **Open**, then **Open** again.
+PasteClip is not notarized by Apple yet, so macOS blocks the first launch: open the app once
+and close the warning, then go to **System Settings → Privacy & Security**, scroll down and
+click **Open Anyway**.
 
 Or, from Terminal: `xattr -dr com.apple.quarantine /Applications/PasteClip.app`
 
@@ -48,10 +46,11 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Pinboards**: named, coloured collections for clips you want to keep
 - **Paste stack**: copy several things, then paste them one by one in the same order
 - **Copy text from the screen**: ⇧⌘2, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
+- **Translate**: ⌃Space translates the selected text (or the clipboard) in a small panel by the pointer. It picks the language for you: Vietnamese text into English, anything else into Vietnamese; 1–4 switch between Vietnamese, English, Japanese and Chinese. Return copies, ⌘Return pastes the translation back into the app. With the shelf open, ⌃Space translates the selected clips instead. Uses Google Translate or Bing Translator (free, no key) or Apple's on-device translation; Google Cloud, DeepL and Microsoft, and the AI models of OpenAI, Claude, Gemini, DeepSeek and Grok, work with your own API key (the model can be chosen)
 - **Preview and edit**: Space for a large preview (Quick Look for images and files), give clips a title, edit text clips
 - **Direct paste** into the current app, or paste as plain text (needs Accessibility permission)
 - **Privacy**: skips clips that password managers mark as private, and anything copied in apps you exclude
-- **Settings**: paste into the front app or only copy, always plain text, history retention, privacy options (screen sharing, link previews, passwords, temporary clips, ignored apps), shortcuts, sounds, launch at login
+- **Settings**: paste into the front app or only copy, always plain text, history retention, translation (languages and their order, service, API keys), privacy options (screen sharing, link previews, passwords, temporary clips, ignored apps), shortcuts, sounds, launch at login
 - **iCloud sync** of clips and pinboards (needs a signed build, see below)
 
 See [docs/SPEC.md](docs/SPEC.md) for the full functional spec.
@@ -78,7 +77,7 @@ app is signed ad hoc, macOS treats each rebuild as a new app, and asks for permi
 
 ## Global shortcuts
 
-All four can be changed or removed in Settings → Shortcuts.
+All five can be changed or removed in Settings → Shortcuts.
 
 | Key | Action |
 |---|---|
@@ -86,25 +85,46 @@ All four can be changed or removed in Settings → Shortcuts.
 | ⌃⌘C | Start or stop the paste stack |
 | ⌃⌘V | Paste the next clip from the stack |
 | ⇧⌘2 | Copy text from an area of the screen |
+| ⌃Space | Translate the selected text, or the clipboard |
+
+⌃Space is also macOS's shortcut for switching input sources. If that one is turned on
+(System Settings → Keyboard → Keyboard Shortcuts → Input Sources), macOS takes the key first:
+turn it off there or pick another shortcut. Settings shows a warning next to any shortcut macOS uses.
+
+## In a translation
+
+| Key | Action |
+|---|---|
+| 1…9 / ← → | Translate into another language |
+| ↑ ↓ | Switch to the previous / next translation service |
+| Return / ⌘C | Copy the translation |
+| ⌘Return | Paste it into the app you were using, replacing the selection |
+| ⌘S | Save it to history |
+| ⌘O | Show or hide the original |
+| Esc / click outside | Close |
 
 ## Shortcuts in the shelf
 
 | Key | Action |
 |---|---|
 | ← → | Select a card |
-| Return / double-click | Paste into the app you were using (hold ⇧ for plain text) |
+| ⇧← ⇧→ / ⇧-click | Select several cards in a row |
+| ⌘-click | Add a card to the selection, or take it out |
+| ⌘A | Select every card (when the search is empty) |
+| Return / double-click | Paste into the app you were using (hold ⇧ for plain text). With several cards selected, Return pastes them together, a line apart |
 | Double-click a card's title | Rename the clip (Return saves, Esc cancels, empty resets) |
 | ⌘1…⌘9 | Paste a card quickly |
 | Space / ⌘Y | Preview in a popup above the card; ← → move it to the next clip (Space works when the search field is empty) |
 | ⌘E | Edit a text clip (⌘S saves, Esc cancels) |
 | ⌘P | Pin / unpin |
-| ⌘C | Copy without pasting |
-| ⌘⌫ | Delete |
+| ⌘C | Copy without pasting (several cards: copied together) |
+| ⌃Space (the translate shortcut) | Translate the selected clips: text, or the text found in an image |
+| ⌘⌫ | Delete (every selected card) |
 | ⌘→ / ⌘← or Tab / ⇧Tab | Next / previous pinboard |
 | ⌘N | New text item |
 | ⌘F | Search |
 | ⌘, | Settings |
-| Esc / click outside | Close |
+| Esc / click outside | Clear a selection of several cards, then close |
 
 Right-click a card to add it to a pinboard or the paste stack. Right-click a pinboard tab to edit or delete it.
 Drag a pinboard tab onto another to reorder the pinboards, and drag cards within a pinboard to arrange them.
