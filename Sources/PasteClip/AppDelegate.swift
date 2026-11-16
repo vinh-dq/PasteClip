@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "list.clipboard", accessibilityDescription: "PasteClip")
+        statusItem.button?.image = MenuBarIcon.image
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
