@@ -33,6 +33,7 @@ final class ShelfController {
     private var keyMonitor: Any?
     private var clickMonitor: Any?
     private var localClickMonitor: Any?
+    private var scrollMonitor: Any?
     private let height: CGFloat = 340
     /// Gap between the floating shelf and the screen edges.
     private let margin: CGFloat = 10
@@ -167,15 +168,47 @@ final class ShelfController {
             self.state.closePreview()
             return event
         }
+        // The card row scrolls a little faster than a plain scroll view. The popup keeps normal speed.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            if let self, event.window === self.panel { Self.scrollFurther(for: event, in: self.panel) }
+            return event
+        }
+    }
+
+    /// How far the card row scrolls compared with a plain scroll view.
+    private static let scrollSpeed: CGFloat = 1.5
+
+    /// Adds the extra distance to the horizontal scroll view under the pointer. The event itself is
+    /// left alone: the scroll view follows the original trackpad gesture, and a rebuilt copy of the
+    /// event made it ignore most of the gesture.
+    private static func scrollFurther(for event: NSEvent, in window: NSWindow) {
+        guard let hit = window.contentView?.hitTest(event.locationInWindow) else { return }
+        var view: NSView? = hit
+        while let v = view, !(v is NSScrollView) { view = v.superview }
+        guard let scroll = view as? NSScrollView, let document = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let maxX = document.frame.width - clip.bounds.width
+        guard maxX > 0 else { return }
+        // A mouse wheel scrolls the row with its vertical wheel, in lines rather than points.
+        var delta = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
+        if !event.hasPreciseScrollingDeltas { delta *= scroll.horizontalLineScroll }
+        var origin = clip.bounds.origin
+        let x = min(max(origin.x - delta * (scrollSpeed - 1), 0), maxX)
+        guard x != origin.x else { return }
+        origin.x = x
+        clip.scroll(to: origin)
+        scroll.reflectScrolledClipView(clip)
     }
 
     private func removeMonitors() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         keyMonitor = nil
         clickMonitor = nil
         localClickMonitor = nil
+        scrollMonitor = nil
     }
 
     /// Returns true when the key was handled and shouldn't reach the focused text field.
