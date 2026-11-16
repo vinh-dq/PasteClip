@@ -187,7 +187,8 @@ struct ClipCard: View, Equatable {
             ZStack {
                 Color.primary.opacity(0.05)
                 if let image = preview?.image {
-                    Image(nsImage: image).resizable().scaledToFill()
+                    // Fitted, not filled, so the whole image shows (as image clips do).
+                    Image(nsImage: image).resizable().scaledToFit().padding(6)
                 } else {
                     Image(systemName: "safari").font(.system(size: 34, weight: .light)).foregroundStyle(.tertiary)
                 }
