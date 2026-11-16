@@ -274,6 +274,42 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
     #expect(store.items.map(\.text) == ["new", "old pinned"])
 }
 
+@Test func pinboardClipsOutliveRetention() {
+    let (store, _, _) = makeStore()
+    let board = store.createPinboard(name: "Work", colorIndex: 1)
+    var old = ClipItem(kind: .text, text: "old on board")
+    old.date = Date().addingTimeInterval(-30 * 86_400)
+    store.insert(old)
+    store.setPinboard(store.items[0], board)
+    var stale = ClipItem(kind: .text, text: "old")
+    stale.date = old.date
+    store.insert(stale)
+
+    store.retentionDays = 1
+    store.insert(ClipItem(kind: .text, text: "new"))
+    #expect(store.items.map(\.text) == ["new", "old on board"])
+}
+
+@Test func pinboardClipsDontCountTowardTheLimit() {
+    let (store, _, dir) = makeStore()
+    let board = store.createPinboard(name: "Work", colorIndex: 1)
+    for text in ["a", "b", "c"] {
+        store.insert(ClipItem(kind: .text, text: text))
+        store.setPinboard(store.items[0], board)
+    }
+    store.historyLimit = 2
+    for text in ["1", "2", "3"] { store.insert(ClipItem(kind: .text, text: text)) }
+
+    let kept = { (s: ClipStore) in Set(s.items.compactMap(\.text)) }
+    #expect(kept(store) == ["a", "b", "c", "2", "3"])
+
+    // Still there after a restart with a tighter limit.
+    store.flush()
+    let reopened = ClipStore(directory: dir, pasteboard: NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)")))
+    reopened.historyLimit = 1
+    #expect(kept(reopened) == ["a", "b", "c", "3"])
+}
+
 // MARK: - Paste stack
 
 @Test func stackCollectsInCopyOrderAndPopsOldestFirst() {
