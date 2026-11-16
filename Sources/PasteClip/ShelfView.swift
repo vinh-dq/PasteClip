@@ -41,6 +41,12 @@ final class ShelfState: ObservableObject {
     @Published var textInputActive = false
     /// The clip whose title is being edited on its card. Keys go to the title field meanwhile.
     @Published var renamingID: UUID?
+    /// Saves the text being edited in the popup; set while editing.
+    var commitEdit: (() -> Void)?
+    /// The card being dragged, so a pinboard's cards can show where it would land.
+    @Published var draggingID: UUID?
+    /// The card a dragged card is over, on a pinboard.
+    @Published var reorderTarget: UUID?
     /// Clips matching the query. Recomputed only when the clips or the query change.
     @Published private(set) var visible: [ClipItem] = []
     /// Apps that clips came from, sorted by name.
@@ -136,10 +142,13 @@ final class ShelfState: ObservableObject {
         composing = false
         textInputActive = false
         renamingID = nil
+        commitEdit = nil
         focusToken = UUID()
     }
 
     func reset() {
+        draggingID = nil
+        reorderTarget = nil
         query = ClipQuery()
         selection = 0
         closePreview()
@@ -239,6 +248,7 @@ struct ShelfView: View {
                         selected: state.query.pinboardID == board.id, dropOnto: board) {
                         state.select(board: board.id)
                     }
+                    .onDrag { PinboardDrag.provider(for: board) }
                     .contextMenu {
                         Button("Edit Pinboard…") { editingBoard.value = board }
                         Button("Delete Pinboard", role: .destructive) {
@@ -279,34 +289,37 @@ struct ShelfView: View {
     }
 
     /// A tab. Dropping a card on a pinboard tab moves the clip there; dropping it on History
-    /// (`dropOnto` nil) takes it off its pinboard.
+    /// (`dropOnto` nil) takes it off its pinboard. Dropping a pinboard tab on another moves it there.
     private func tab(title: String, icon: String?, color: Color?, tint: Color, selected: Bool,
                      dropOnto board: Pinboard?, action: @escaping () -> Void) -> some View {
         let key = board?.id.uuidString ?? "history"
         let targeted = dropTarget.value == key
-        return Button(action: action) {
-            HStack(spacing: 6) {
-                if let icon { Image(systemName: icon) }
-                if let color {
-                    Circle().fill(color).frame(width: 10, height: 10)
-                        .overlay(Circle().stroke(.white.opacity(0.7), lineWidth: 1))
-                }
-                Text(title).lineLimit(1)
+        // Not a Button: a button keeps the mouse-down to itself, so the tab couldn't be dragged.
+        return HStack(spacing: 6) {
+            if let icon { Image(systemName: icon) }
+            if let color {
+                Circle().fill(color).frame(width: 10, height: 10)
+                    .overlay(Circle().stroke(.white.opacity(0.7), lineWidth: 1))
             }
-            .padding(.horizontal, 13)
-            .frame(height: 30)
-            .contentShape(Capsule())
-            .modifier(TabBackground(selected: selected || targeted, tint: tint))
+            Text(title).lineLimit(1)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 13)
+        .frame(height: 30)
+        .contentShape(Capsule())
+        .modifier(TabBackground(selected: selected || targeted, tint: tint))
+        .onTapGesture(perform: action)
         .fontWeight(selected ? .semibold : .regular)
         .scaleEffect(targeted ? 1.1 : 1)
         .animation(.spring(response: 0.2, dampingFraction: 0.7), value: targeted)
-        .onDrop(of: [ClipDrag.type], isTargeted: Binding(
+        .onDrop(of: [ClipDrag.type, PinboardDrag.type], isTargeted: Binding(
             get: { targeted },
             set: { dropTarget.value = $0 ? key : (dropTarget.value == key ? nil : dropTarget.value) }
         )) { providers in
-            ClipDrag.receive(providers) { id in
+            if PinboardDrag.receive(providers, { id in
+                guard let board, let to = store.pinboards.firstIndex(where: { $0.id == board.id }) else { return }
+                withAnimation(.easeOut(duration: 0.15)) { store.movePinboard(id, to: to) }
+            }) { return board != nil }
+            return ClipDrag.receive(providers) { id in
                 guard let item = store.item(withID: id) else { return }
                 store.setPinboard(item, board)
             }

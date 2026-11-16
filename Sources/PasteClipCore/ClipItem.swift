@@ -56,6 +56,8 @@ public struct ClipItem: Identifiable, Codable, Equatable {
     public var date = Date()
     public var pinned = false
     public var pinboardID: UUID?
+    /// Position on its pinboard, lower first. nil sorts by date, newest first (see `boardKey`).
+    public var boardOrder: Double?
 
     public init(kind: ClipKind, text: String? = nil, imageFile: String? = nil, filePaths: [String]? = nil,
                 sourceBundleID: String? = nil, sourceName: String? = nil) {
@@ -132,4 +134,10 @@ public struct RGBA: Equatable {
         b = Double((value >> 8) & 0xFF) / 255
         a = Double(value & 0xFF) / 255
     }
+}
+
+extension ClipItem {
+    /// Sort key on a pinboard. Clips never reordered fall back to their date, newest first,
+    /// on the same scale, so a clip added later still lands at the front.
+    public var boardKey: Double { boardOrder ?? -date.timeIntervalSince1970 }
 }

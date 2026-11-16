@@ -188,6 +188,52 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
     #expect(store.items.first?.pinboardID == nil)
 }
 
+@Test func reordersClipsOnAPinboard() {
+    let (store, _, dir) = makeStore()
+    let board = store.createPinboard(name: "Work", colorIndex: 0)
+    for text in ["a", "b", "c"] {
+        store.insert(ClipItem(kind: .text, text: text))
+        store.setPinboard(store.items[0], board)
+    }
+    var query = ClipQuery()
+    query.pinboardID = board.id
+    func texts(_ store: ClipStore) -> [String?] { query.apply(store.items).map(\.text) }
+    #expect(texts(store) == ["c", "b", "a"])
+
+    store.moveClip(store.items.first { $0.text == "a" }!.id, to: store.items.first { $0.text == "c" }!.id)
+    #expect(texts(store) == ["a", "c", "b"])
+    store.moveClip(store.items.first { $0.text == "a" }!.id, to: store.items.first { $0.text == "b" }!.id)
+    #expect(texts(store) == ["c", "b", "a"])
+
+    // A clip added later goes to the front, and the order survives a relaunch.
+    store.insert(ClipItem(kind: .text, text: "d"))
+    store.setPinboard(store.items[0], board)
+    #expect(texts(store) == ["d", "c", "b", "a"])
+    store.flush()
+    #expect(texts(ClipStore(directory: dir, pasteboard: NSPasteboard(name: .init(UUID().uuidString)))) == ["d", "c", "b", "a"])
+    // History is still newest first.
+    #expect(ClipQuery().apply(store.items).map(\.text) == ["d", "c", "b", "a"])
+}
+
+@Test func reordersPinboards() {
+    let (store, _, _) = makeStore()
+    let a = store.createPinboard(name: "A", colorIndex: 0)
+    store.createPinboard(name: "B", colorIndex: 1)
+    let c = store.createPinboard(name: "C", colorIndex: 2)
+    store.movePinboard(c.id, to: 0)
+    #expect(store.pinboards.map(\.name) == ["C", "A", "B"])
+    store.movePinboard(c.id, to: 2)
+    #expect(store.pinboards.map(\.name) == ["A", "B", "C"])
+    store.movePinboard(a.id, to: 1)
+    #expect(store.pinboards.map(\.name) == ["B", "A", "C"])
+    // New pinboards go at the end; a synced one lands by its order.
+    store.createPinboard(name: "D", colorIndex: 3)
+    var remote = store.pinboards[0]
+    remote.order = 10
+    store.applyRemote(remote)
+    #expect(store.pinboards.map(\.name) == ["A", "C", "D", "B"])
+}
+
 @Test func duplicateKeepsIdentityTitleAndBoard() {
     let (store, _, _) = makeStore()
     let board = store.createPinboard(name: "Work", colorIndex: 0)

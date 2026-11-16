@@ -465,6 +465,11 @@ enum ClipDrag {
 
     /// Reads the dragged clip's id and hands it over on the main thread.
     static func receive(_ providers: [NSItemProvider], _ handle: @escaping (UUID) -> Void) -> Bool {
+        receiveID(providers, of: type, handle)
+    }
+
+    /// Reads an id dragged as `type` and hands it over on the main thread. False if there is none.
+    static func receiveID(_ providers: [NSItemProvider], of type: UTType, _ handle: @escaping (UUID) -> Void) -> Bool {
         guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(type.identifier) })
         else { return false }
         _ = provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
@@ -472,5 +477,24 @@ enum ClipDrag {
             DispatchQueue.main.async { handle(id) }
         }
         return true
+    }
+}
+
+/// Dragging a pinboard tab onto another tab, to reorder the pinboards. Only PasteClip accepts it.
+enum PinboardDrag {
+    static let type = UTType(exportedAs: "io.github.vinh-dq.pasteclip.pinboard")
+
+    static func provider(for board: Pinboard) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .ownProcess) { done in
+            done(Data(board.id.uuidString.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    /// Reads the dragged pinboard's id and hands it over on the main thread. False if it isn't one.
+    static func receive(_ providers: [NSItemProvider], _ handle: @escaping (UUID) -> Void) -> Bool {
+        ClipDrag.receiveID(providers, of: type, handle)
     }
 }

@@ -78,6 +78,11 @@ public struct ClipQuery: Equatable {
 
     public func apply(_ items: [ClipItem]) -> [ClipItem] {
         let now = Date()
-        return items.filter { matches($0, now: now) }
+        let found = items.filter { matches($0, now: now) }
+        // A pinboard keeps the order the user arranged; history stays newest first.
+        guard pinboardID != nil else { return found }
+        return found.enumerated()
+            .sorted { ($0.element.boardKey, $0.offset) < ($1.element.boardKey, $1.offset) }
+            .map(\.element)
     }
 }

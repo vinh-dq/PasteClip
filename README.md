@@ -105,6 +105,7 @@ All three can be changed or removed in Settings → Shortcuts.
 | Esc / click outside | Close |
 
 Right-click a card to add it to a pinboard or the paste stack. Right-click a pinboard tab to edit or delete it.
+Drag a pinboard tab onto another to reorder the pinboards, and drag cards within a pinboard to arrange them.
 
 ## iCloud sync
 
@@ -156,7 +157,7 @@ Sources/
     SettingsWindow.swift  Settings window and shortcut recorder
     ViewState.swift       Stand-in for @State (see below)
 Tests/
-  PasteClipCoreTests/     Capture, rich text, de-dup, limits, pinboards, stack, query, sync hooks
+  PasteClipCoreTests/     Capture, rich text, de-dup, limits, pinboards and their order, stack, query, sync hooks
 ```
 
 How it works: macOS has no notification for clipboard changes, so `ClipStore` checks

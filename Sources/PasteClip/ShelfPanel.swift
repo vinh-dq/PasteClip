@@ -32,6 +32,7 @@ final class ShelfController {
     private let settings: AppSettings
     private var keyMonitor: Any?
     private var clickMonitor: Any?
+    private var localClickMonitor: Any?
     private let height: CGFloat = 340
     /// Gap between the floating shelf and the screen edges.
     private let margin: CGFloat = 10
@@ -92,6 +93,8 @@ final class ShelfController {
         }
         popup.show(item, over: cardFrame, in: panel,
                    sharingType: settings.hideDuringScreenSharing ? .none : .readOnly)
+        // ⌘E on the shelf opens the popup already editing; it can only take focus once shown.
+        if state.editing, !popup.isKey { popup.panel.makeKey() }
     }
 
     func toggle() { isVisible ? hide() : show() }
@@ -157,17 +160,28 @@ final class ShelfController {
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.hide()
         }
+        // Close the popup when the user clicks the shelf (or another card) outside it, keeping any edit.
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, self.state.previewing, event.window !== self.popup.panel else { return event }
+            self.state.commitEdit?()
+            self.state.closePreview()
+            return event
+        }
     }
 
     private func removeMonitors() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
         keyMonitor = nil
         clickMonitor = nil
+        localClickMonitor = nil
     }
 
     /// Returns true when the key was handled and shouldn't reach the focused text field.
     private func handle(_ event: NSEvent) -> Bool {
+        let typing = state.renamingID != nil || state.composing || state.textInputActive
+        if typing, performEditCommand(event) { return true }
         // Renaming a card: every key goes to its title field (Return saves, Esc cancels).
         if state.renamingID != nil { return false }
         if state.composing {
@@ -175,6 +189,24 @@ final class ShelfController {
             return false
         }
         return state.previewing ? handlePreviewKey(event) : handleShelfKey(event)
+    }
+
+    /// ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V and ⌘A for the focused text field. The app has no Edit menu (it lives
+    /// in the menu bar only), so nothing else turns these keys into actions.
+    private func performEditCommand(_ event: NSEvent) -> Bool {
+        let f = flags(event)
+        guard f == .command || f == [.command, .shift], let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let action: Selector
+        switch (key, f.contains(.shift)) {
+        case ("z", false): action = Selector(("undo:"))
+        case ("z", true): action = Selector(("redo:"))
+        case ("x", false): action = #selector(NSText.cut(_:))
+        case ("c", false): action = #selector(NSText.copy(_:))
+        case ("v", false): action = #selector(NSText.paste(_:))
+        case ("a", false): action = #selector(NSText.selectAll(_:))
+        default: return false
+        }
+        return NSApp.sendAction(action, to: nil, from: nil)
     }
 
     private func flags(_ event: NSEvent) -> NSEvent.ModifierFlags {

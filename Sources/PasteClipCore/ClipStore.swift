@@ -301,7 +301,9 @@ public final class ClipStore: ObservableObject {
 
     @discardableResult
     public func createPinboard(name: String, colorIndex: Int) -> Pinboard {
-        let board = Pinboard(name: name, colorIndex: colorIndex)
+        var board = Pinboard(name: name, colorIndex: colorIndex)
+        // Once the user has ordered the pinboards, new ones go at the end.
+        if let last = pinboards.compactMap(\.order).max() { board.order = last + 1 }
         pinboards.append(board)
         save()
         notify(saved: [.pinboard(board.id)], deleted: [])
@@ -327,9 +329,47 @@ public final class ClipStore: ObservableObject {
         notify(saved: changed, deleted: [.pinboard(board.id)])
     }
 
-    /// Moves a clip onto a pinboard, or off any pinboard when `board` is nil.
+    /// Moves the pinboard to `index` among the pinboards.
+    public func movePinboard(_ id: UUID, to index: Int) {
+        guard let from = pinboards.firstIndex(where: { $0.id == id }) else { return }
+        let board = pinboards.remove(at: from)
+        pinboards.insert(board, at: min(max(index, 0), pinboards.count))
+        for i in pinboards.indices { pinboards[i].order = Double(i) }
+        save()
+        notify(saved: pinboards.map { .pinboard($0.id) }, deleted: [])
+    }
+
+    /// Moves a clip onto a pinboard, at the front, or off any pinboard when `board` is nil.
     public func setPinboard(_ item: ClipItem, _ board: Pinboard?) {
-        update(item.id) { $0.pinboardID = board?.id }
+        guard item.pinboardID != board?.id else { return }
+        let front = board.map { b in items.filter { $0.pinboardID == b.id }.map(\.boardKey).min() ?? 0 }
+        update(item.id) {
+            $0.pinboardID = board?.id
+            $0.boardOrder = front.map { $0 - 1 }
+        }
+    }
+
+    /// Moves a clip on its pinboard to where `target` is, shifting the clips in between.
+    public func moveClip(_ id: UUID, to target: UUID) {
+        guard id != target, let board = item(withID: id)?.pinboardID,
+              item(withID: target)?.pinboardID == board else { return }
+        var ordered = items.enumerated().filter { $0.element.pinboardID == board }
+            .sorted { ($0.element.boardKey, $0.offset) < ($1.element.boardKey, $1.offset) }
+            .map(\.element.id)
+        guard let from = ordered.firstIndex(of: id), let to = ordered.firstIndex(of: target) else { return }
+        ordered.remove(at: from)
+        ordered.insert(id, at: to)
+        // Renumber from the current front, so clips added later still go before these.
+        let base = items.filter { $0.pinboardID == board }.map(\.boardKey).min() ?? 0
+        let position = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($1, base + Double($0)) })
+        var changed: [SyncRecord] = []
+        for i in items.indices {
+            guard let p = position[items[i].id], items[i].boardOrder != p else { continue }
+            items[i].boardOrder = p
+            changed.append(.clip(items[i].id))
+        }
+        save()
+        notify(saved: changed, deleted: [])
     }
 
     // MARK: - Paste stack
@@ -432,8 +472,8 @@ public final class ClipStore: ObservableObject {
             pinboards[i] = board
         } else {
             pinboards.append(board)
-            pinboards.sort { $0.created < $1.created }
         }
+        pinboards.sort { ($0.order ?? .infinity, $0.created) < ($1.order ?? .infinity, $1.created) }
         save()
     }
 

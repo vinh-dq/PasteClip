@@ -28,7 +28,8 @@ struct CardsRow: View {
                         }
                     }
                     .padding(.vertical, 8)
-                    .padding(.horizontal, 6)
+                    // Room for the reorder bar beside the first and last cards.
+                    .padding(.horizontal, 12)
                 }
                 // Follow keyboard moves; clicks leave the row where it is.
                 .onChange(of: selection.scrollRequest) {
@@ -60,7 +61,17 @@ struct CardsRow: View {
             .animation(.easeOut(duration: 0.1), value: selected)
             .id(item.id)
             .background { if state.previewing && selected { frameReporter } }
-            .onDrag { ClipDrag.provider(for: item, store: store) }
+            .overlay(alignment: reorderEdge(for: item, in: index)) {
+                if state.reorderTarget == item.id, state.draggingID != item.id {
+                    Capsule().fill(Color.accentColor).frame(width: 4).padding(.vertical, 6)
+                        .offset(x: reorderEdge(for: item, in: index) == .leading ? -10 : 10)
+                }
+            }
+            .onDrag {
+                state.draggingID = item.id
+                return ClipDrag.provider(for: item, store: store)
+            }
+            .onDrop(of: [ClipDrag.type], delegate: ReorderDropDelegate(target: item, state: state, store: store))
             // A single click selects at once; the double-click is recognised alongside it
             // instead of making every click wait to see whether a second one follows.
             // Double-clicking the header renames the clip; anywhere else pastes it.
@@ -73,6 +84,13 @@ struct CardsRow: View {
                 }
             })
             .contextMenu { menu(for: item, index: index) }
+    }
+
+    /// A dragged card takes the target's place: before it when coming from the right, after it
+    /// when coming from the left. The insertion bar shows on that side.
+    private func reorderEdge(for item: ClipItem, in index: Int) -> Alignment {
+        let from = state.visible.firstIndex { $0.id == state.draggingID } ?? Int.max
+        return from > index ? .leading : .trailing
     }
 
     private static func isHeld(_ key: ModifierKey) -> Bool {
@@ -138,5 +156,32 @@ struct CardsRow: View {
         }
         Divider()
         Button("Delete", role: .destructive) { store.delete(item) }
+    }
+}
+
+/// Dropping a card on another card of the same pinboard moves it there. History keeps its order.
+private struct ReorderDropDelegate: DropDelegate {
+    let target: ClipItem
+    let state: ShelfState
+    let store: ClipStore
+
+    func validateDrop(info: DropInfo) -> Bool {
+        state.query.pinboardID != nil && info.hasItemsConforming(to: [ClipDrag.type])
+    }
+
+    func dropEntered(info: DropInfo) { state.reorderTarget = target.id }
+
+    func dropExited(info: DropInfo) {
+        if state.reorderTarget == target.id { state.reorderTarget = nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        state.reorderTarget = nil
+        return ClipDrag.receive(info.itemProviders(for: [ClipDrag.type])) { [state, store, target] id in
+            state.draggingID = nil
+            withAnimation(.easeOut(duration: 0.2)) { store.moveClip(id, to: target.id) }
+        }
     }
 }

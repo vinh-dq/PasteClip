@@ -177,6 +177,7 @@ public final class CloudSync: ObservableObject, CKSyncEngineDelegate, @unchecked
             record["date"] = item.date
             record["pinned"] = item.pinned
             record["pinboard"] = item.pinboardID?.uuidString
+            record["boardOrder"] = item.boardOrder
             record["sourceBundleID"] = item.sourceBundleID
             record["richType"] = item.richType
             record.encryptedValues["text"] = item.text
@@ -194,6 +195,7 @@ public final class CloudSync: ObservableObject, CKSyncEngineDelegate, @unchecked
             record.encryptedValues["name"] = board.name
             record["colorIndex"] = board.colorIndex
             record["created"] = board.created
+            record["order"] = board.order
             return record
 
         case nil:
@@ -218,6 +220,7 @@ public final class CloudSync: ObservableObject, CKSyncEngineDelegate, @unchecked
             item.date = record["date"] as? Date ?? Date()
             item.pinned = record["pinned"] as? Bool ?? false
             item.pinboardID = (record["pinboard"] as? String).flatMap(UUID.init(uuidString:))
+            item.boardOrder = record["boardOrder"] as? Double
             store.applyRemote(item,
                               imageSource: (record["image"] as? CKAsset)?.fileURL,
                               richSource: (record["rich"] as? CKAsset)?.fileURL)
@@ -227,6 +230,7 @@ public final class CloudSync: ObservableObject, CKSyncEngineDelegate, @unchecked
                                  colorIndex: record["colorIndex"] as? Int ?? 0)
             board.id = id
             board.created = record["created"] as? Date ?? Date()
+            board.order = record["order"] as? Double
             store.applyRemote(board)
 
         case nil:

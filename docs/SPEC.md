@@ -47,6 +47,7 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | 4.2 | A clip belongs to at most one pinboard. Add or remove it from the card's right-click menu | ✅ |
 | 4.3 | Shelf tabs: History, then each pinboard. Tab / ⇧Tab move between them | ✅ |
 | 4.4 | Deleting a pinboard keeps its clips in history | ✅ |
+| 4.5 | Reorder pinboards by dragging a tab onto another tab; new pinboards go at the end. Arrange clips within a pinboard by dragging a card onto another (a bar shows where it lands); a clip added to a pinboard goes to the front. History stays newest first. Both orders are saved and synced | ✅ |
 
 ## 5. Paste stack
 

@@ -195,14 +195,19 @@ private struct PreviewCard: View {
         .onAppear {
             titleDraft.value = item.title ?? ""
             textDraft.value = item.text ?? ""
-            if state.editing { focus = .body }
+            if state.editing {
+                focus = .body
+                state.commitEdit = saveText
+            }
         }
         .onChange(of: state.editing) { _, editing in
             if editing {
                 textDraft.value = item.text ?? ""
                 focus = .body
-            } else if focus == .body {
-                focus = nil
+                state.commitEdit = saveText
+            } else {
+                state.commitEdit = nil
+                if focus == .body { focus = nil }
             }
         }
         .onChange(of: focus) { _, field in
@@ -213,6 +218,11 @@ private struct PreviewCard: View {
             commitTitle()
             state.textInputActive = false
         }
+    }
+
+    /// Saves the edited text, if it changed. Kept in `state.commitEdit` while editing.
+    private func saveText() {
+        if textDraft.value != item.text { store.updateText(item, textDraft.value) }
     }
 
     private func commitTitle() {
