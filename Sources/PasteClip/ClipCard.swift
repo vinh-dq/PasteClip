@@ -61,7 +61,8 @@ struct ClipCard: View, Equatable {
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5))
+            // A clip on a pinboard is edged in the pinboard's colour, to tell it apart at a glance.
+            .strokeBorder(board?.color ?? Color.primary.opacity(0.07), lineWidth: board == nil ? 0.5 : 2))
         // Flatten the card first so the shadow is drawn once, not for every layer inside it.
         .flattened(!renaming)
         .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
@@ -86,32 +87,37 @@ struct ClipCard: View, Equatable {
 
     private var symbol: String { item.isImage ? ClipKind.image.symbol : item.kind.symbol }
 
-    /// The app it came from and its name, or, without one, when it was copied. Pinned clips,
-    /// clips in the paste stack and pinboard clips (in History) say so too.
+    /// The app it came from and its name, or, without one, when it was copied. Pinned clips and
+    /// clips in the paste stack say so too. On a pinboard, the label takes the pinboard's colour.
     private var label: some View {
-        HStack(spacing: 5) {
+        let tinted = board != nil && !renaming
+        return HStack(spacing: 5) {
             appIcon
-            if let board { Circle().fill(board.color).frame(width: 7, height: 7) }
             if renaming {
                 TitleField(item: item, store: store, placeholder: "Name this clip", onEnd: onEndRenaming)
             } else if let title = item.title {
                 Text(title)
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(tinted ? Color.white : Color.primary)
                     .lineLimit(1)
             } else {
                 Text(item.date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(tinted ? Color.white.opacity(0.9) : Color.secondary)
                     .lineLimit(1)
             }
-            if item.pinned { Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.secondary) }
-            if inStack { Image(systemName: "square.stack.3d.up.fill").font(.system(size: 8.5)).foregroundStyle(.secondary) }
+            Group {
+                if item.pinned { Image(systemName: "pin.fill") }
+                if inStack { Image(systemName: "square.stack.3d.up.fill") }
+            }
+            .font(.system(size: 8.5))
+            .foregroundStyle(tinted ? Color.white.opacity(0.9) : Color.secondary)
         }
         .padding(.leading, 3)
         .padding(.trailing, 9)
         .frame(height: 22)
-        .background(Capsule().fill(Color(nsColor: .windowBackgroundColor).opacity(renaming ? 1 : 0.86)))
+        .background(Capsule().fill(tinted ? board!.color : Color(nsColor: .windowBackgroundColor).opacity(renaming ? 1 : 0.86)))
+        .help(board.map { "On \($0.name)" } ?? "")
         .overlay(Capsule().strokeBorder(renaming ? Color.accentColor : Color.primary.opacity(0.06), lineWidth: renaming ? 1.5 : 0.5))
         .shadow(color: .black.opacity(0.08), radius: 1.5, y: 0.5)
         // As wide as what it says, up to clear of the kind mark.
