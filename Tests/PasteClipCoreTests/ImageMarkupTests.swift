@@ -81,8 +81,8 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
 }
 
 @Test func addsAnEditedImageAsANewClip() throws {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PasteClipTests-\(UUID().uuidString)", isDirectory: true)
-    let store = ClipStore(directory: dir, pasteboard: NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)")))
+    let dir = Scratch.folder()
+    let store = ClipStore(directory: dir, pasteboard: Scratch.pasteboard())
     let png = try #require(MarkupRenderer.pngData(blankImage(width: 20, height: 10)))
     let first = try #require(store.addImage(png, title: "Shot"))
     let second = try #require(store.addImage(png))
@@ -104,11 +104,11 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
 }
 
 @Test func imageShortcutsDefaultAndCanBeChanged() {
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
-    #expect(settings.floatImageKey?.display == "⇧⌘P")
+    #expect(settings.floatImageKey?.display == "⌥⌘P")
     #expect(settings.screenshotHotKey?.display == "⇧⌘1")
-    #expect(settings.screenshotAction == .copy)
+    #expect(settings.screenshotAction == .offer)
     settings.screenshotHotKey = KeyCombo(keyCode: 0, modifiers: KeyCombo.control | KeyCombo.shift, keyName: "A")
     settings.screenshotAction = .edit
     settings.floatImageKey = nil
@@ -117,7 +117,7 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
     #expect(reloaded.screenshotAction == .edit)
     #expect(reloaded.floatImageKey == nil)
     reloaded.resetShortcuts()
-    #expect(reloaded.floatImageKey?.display == "⇧⌘P" && reloaded.screenshotHotKey?.display == "⇧⌘1")
+    #expect(reloaded.floatImageKey?.display == "⌥⌘P" && reloaded.screenshotHotKey?.display == "⇧⌘1")
 }
 
 @Test func draggingACornerScalesTextFromTheOppositeCorner() {
@@ -157,8 +157,8 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
 }
 
 @Test func textInAnImageIsReadOnDemandAndKept() async throws {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PasteClipTests-\(UUID().uuidString)", isDirectory: true)
-    let store = ClipStore(directory: dir, pasteboard: NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)")))
+    let dir = Scratch.folder()
+    let store = ClipStore(directory: dir, pasteboard: Scratch.pasteboard())
     store.recognizesText = false
     // An image with a line of text, as a screenshot would have.
     let size = NSSize(width: 700, height: 100)
@@ -188,8 +188,8 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
 }
 
 @Test func anImageLentToTheClipboardIsntSaved() throws {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PasteClipTests-\(UUID().uuidString)", isDirectory: true)
-    let pasteboard = NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)"))
+    let dir = Scratch.folder()
+    let pasteboard = Scratch.pasteboard()
     let store = ClipStore(directory: dir, pasteboard: pasteboard)
     let png = try #require(MarkupRenderer.pngData(blankImage(width: 20, height: 10)))
     store.copyImageWithoutSaving(png)
@@ -197,4 +197,41 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
     #expect(pasteboard.data(forType: .tiff) != nil)
     store.poll()
     #expect(store.items.isEmpty)
+}
+
+@Test func aScreenshotKeepsWhereItWasTaken() throws {
+    let dir = Scratch.folder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let png = try #require(MarkupRenderer.pngData(blankImage(width: 20, height: 10)))
+    let frame = CGRect(x: 120, y: 340, width: 10, height: 5)
+    do {
+        let store = ClipStore(directory: dir, pasteboard: Scratch.pasteboard())
+        store.recognizesText = false
+        _ = try #require(store.addImage(png, source: "Screenshot", screenFrame: frame))
+        _ = try #require(store.addImage(png))
+        store.flush()
+    }
+    // Read back from disk, as after a relaunch.
+    let store = ClipStore(directory: dir, pasteboard: Scratch.pasteboard())
+    let frames = store.items.map(\.screenFrame)
+    #expect(frames.contains(frame))
+    #expect(frames.contains(nil))
+}
+
+@Test func languagesHaveShortNames() {
+    #expect(Translator.shortName(of: "vi") == "VI")
+    #expect(Translator.shortName(of: "en") == "EN")
+    #expect(Translator.shortName(of: "zh-Hans") == "ZH")
+    #expect(Translator.shortName(of: "zh-Hant") == "ZH-TW")
+}
+
+@Test func theOldFloatShortcutMovesOnce() {
+    let defaults = Scratch.defaults()
+    let old = KeyCombo(keyCode: 35, modifiers: KeyCombo.command | KeyCombo.shift, keyName: "P")
+    defaults.set(try! JSONEncoder().encode(old), forKey: "floatImageKey")
+    let settings = AppSettings(defaults: defaults)
+    #expect(settings.floatImageKey?.display == "⌥⌘P")
+    // Chosen again afterwards, it stays.
+    settings.floatImageKey = old
+    #expect(AppSettings(defaults: defaults).floatImageKey == old)
 }

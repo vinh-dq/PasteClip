@@ -222,7 +222,7 @@ private final class CannedResponses: URLProtocol {
 }
 
 @Test func translationSettingsDefaultToVietnameseFirstAndControlSpace() {
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
     #expect(settings.translationTargets == ["vi", "en", "ja", "zh-Hans"])
     #expect(settings.translationService == .google)
@@ -248,8 +248,8 @@ private final class CannedResponses: URLProtocol {
 }
 
 @Test func borrowedClipboardChangesAreNotSaved() {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PasteClipTests-\(UUID().uuidString)")
-    let pasteboard = NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)"))
+    let dir = Scratch.folder()
+    let pasteboard = Scratch.pasteboard()
     let store = ClipStore(directory: dir, pasteboard: pasteboard)
     store.captureSuspended = true
     pasteboard.clearContents()

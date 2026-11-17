@@ -452,8 +452,9 @@ public final class ClipStore: ObservableObject {
 
     /// Adds an image clip made in PasteClip, such as an edited copy of another image.
     @discardableResult
-    public func addImage(_ png: Data, title: String? = nil, source: String = "PasteClip") -> ClipItem? {
+    public func addImage(_ png: Data, title: String? = nil, source: String = "PasteClip", screenFrame: CGRect? = nil) -> ClipItem? {
         var item = ClipItem(kind: .image, sourceBundleID: Bundle.main.bundleIdentifier, sourceName: source)
+        item.screenFrame = screenFrame
         let name = "\(item.id.uuidString).png"
         guard (try? png.write(to: imageDir.appendingPathComponent(name))) != nil else { return nil }
         item.imageFile = name

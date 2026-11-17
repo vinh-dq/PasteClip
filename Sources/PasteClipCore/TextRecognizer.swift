@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import ImageIO
 import Vision
@@ -121,6 +122,26 @@ public enum TextRecognizer {
 
     /// `image` drawn `factor` times larger, unless that would be more than 24 megapixels.
     /// Text from a screen that isn't Retina reads better at twice the size.
+    /// Reads a small image of text, so the models for `languages` are loaded before text is
+    /// first read for real: after each update of the app macOS prepares them again, which takes
+    /// most of a minute. Slow; call it off the main thread.
+    public static func warmUp(languages: [String]) {
+        let width = 900, height = 80
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 36, nil)
+        let text = NSAttributedString(string: "Hello world こんにちは 你好 안녕하세요",
+                                      attributes: [kCTFontAttributeName as NSAttributedString.Key: font,
+                                                   kCTForegroundColorAttributeName as NSAttributedString.Key: CGColor(gray: 0, alpha: 1)])
+        context.textPosition = CGPoint(x: 16, y: 26)
+        CTLineDraw(CTLineCreateWithAttributedString(text), context)
+        guard let image = context.makeImage() else { return }
+        _ = lines(in: image, languages: languages)
+    }
+
     public static func upscaled(_ image: CGImage, by factor: Int) -> CGImage {
         let width = image.width * factor, height = image.height * factor
         guard factor > 1, width * height <= 24_000_000,

@@ -121,6 +121,11 @@ public enum Translator {
         }
     }
 
+    /// A short label for the language, such as "VI" or "ZH-TW".
+    public static func shortName(of language: String) -> String {
+        language == "zh-Hant" ? "ZH-TW" : base(of: language).uppercased()
+    }
+
     /// The language's name for a model's instructions, telling the two forms of Chinese apart.
     static func fullName(of language: String) -> String {
         switch language {

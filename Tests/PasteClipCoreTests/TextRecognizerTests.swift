@@ -96,7 +96,7 @@ private func line(_ text: String, y: CGFloat, x: CGFloat = 0.1, width: CGFloat =
 }
 
 @Test func screenTextSettingsDefaultToFourLanguages() {
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
     #expect(settings.textLanguages == ["en-US", "vi-VT", "ja-JP", "zh-Hans"])
     #expect(settings.keepLineBreaks)

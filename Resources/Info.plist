@@ -15,13 +15,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.7.1</string>
+	<string>1.7.2</string>
 	<key>CFBundleVersion</key>
-	<string>14</string>
+	<string>15</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>PasteClip looks for a Google Translate tab already open in your browser, so pressing G on a floating image reuses it instead of opening another.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>UTExportedTypeDeclarations</key>

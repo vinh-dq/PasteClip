@@ -119,6 +119,7 @@ final class ScreenshotCapture {
     private let settings: AppSettings
     private let toast = Toast()
     private var running = false
+    private let area = PickedArea()
     /// Called with the new clip once it's saved and copied.
     var onCaptured: ((ClipItem) -> Void)?
 
@@ -131,13 +132,17 @@ final class ScreenshotCapture {
         guard !running else { return }
         guard ScreenTextCapture.hasAccess else { return ScreenTextCapture.askForAccess() }
         running = true
+        area.start()
         ScreenTextCapture.pickArea { [weak self] file in
             guard let self else { return }
             self.running = false
+            self.area.stop()
             guard let file else { return }
             let png = try? Data(contentsOf: file)
             try? FileManager.default.removeItem(at: file)
-            guard let png, let item = self.store.addImage(png, source: "Screenshot") else { return NSSound.beep() }
+            // Where it was taken, so floating it puts it back over that spot.
+            let frame = png.flatMap { NSBitmapImageRep(data: $0)?.cgImage }.flatMap(self.area.placement(of:))
+            guard let png, let item = self.store.addImage(png, source: "Screenshot", screenFrame: frame) else { return NSSound.beep() }
             self.store.copyToPasteboard(item)
             if self.settings.screenshotAction == .copy {
                 self.toast.sharingType = self.settings.hideDuringScreenSharing ? .none : .readOnly
@@ -149,12 +154,10 @@ final class ScreenshotCapture {
 }
 
 /// Translates an area of the screen. The area is picked with the system's selection, and its
-/// translation is put over that very spot, found from where the drag began and ended.
+/// translation is put over that very spot.
 final class ScreenTranslation {
     private var running = false
-    private var mouseMonitor: Any?
-    private var down: NSPoint?
-    private var up: NSPoint?
+    private let area = PickedArea()
     /// Called with the screenshot and where on screen it was taken, when that's known (not for a
     /// window picked with Space).
     var onCaptured: ((CGImage, NSRect?) -> Void)?
@@ -163,16 +166,11 @@ final class ScreenTranslation {
         guard !running else { return }
         guard ScreenTextCapture.hasAccess else { return ScreenTextCapture.askForAccess() }
         running = true
-        down = nil
-        up = nil
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            if event.type == .leftMouseDown { self?.down = NSEvent.mouseLocation } else { self?.up = NSEvent.mouseLocation }
-        }
+        area.start()
         ScreenTextCapture.pickArea { [weak self] file in
             guard let self else { return }
             self.running = false
-            if let mouseMonitor = self.mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
-            self.mouseMonitor = nil
+            self.area.stop()
             guard let file else { return }
             // Read into memory before the file goes: an image from a file source is only decoded
             // when it's drawn, which would find the file gone and draw nothing.
@@ -181,19 +179,58 @@ final class ScreenTranslation {
             let image = data.flatMap { CGImageSourceCreateWithData($0 as CFData, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) }
                 .flatMap { CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) }
             guard let image else { return }
-            self.onCaptured?(image, self.placement(of: image))
+            self.onCaptured?(image, self.area.placement(of: image))
+        }
+    }
+}
+
+/// Where an area picked with the system's selection was on screen, found from where the drag
+/// began and ended. The button and pointer are read as the drag goes: the selection's own window
+/// keeps mouse events from other apps' monitors.
+final class PickedArea {
+    private var timer: Timer?
+    private var down: NSPoint?
+    private var up: NSPoint?
+
+    func start() {
+        down = nil
+        up = nil
+        timer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.watch() }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func watch() {
+        let pressed = NSEvent.pressedMouseButtons & 1 != 0
+        let mouse = NSEvent.mouseLocation
+        if pressed {
+            // A new drag starts over (a click to pick a window, then a drag, say).
+            if down == nil || up != nil { (down, up) = (mouse, nil) }
+        } else if down != nil, up == nil {
+            up = mouse
         }
     }
 
-    /// The area dragged, if the screenshot is that size; a window picked with Space isn't.
-    private func placement(of image: CGImage) -> NSRect? {
-        guard let down, let up else { return nil }
-        let rect = NSRect(x: min(down.x, up.x), y: min(down.y, up.y), width: abs(up.x - down.x), height: abs(up.y - down.y))
-        let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: rect.midX, y: rect.midY)) } ?? NSScreen.main
-        let scale = screen?.backingScaleFactor ?? 2
+    /// The area dragged, if the screenshot is that size; a window picked with Space isn't. The
+    /// button may be seen down a moment late, a little way into the drag, so the area is put
+    /// where the drag ended, on the side it came from, at the screenshot's own size.
+    func placement(of image: CGImage) -> NSRect? {
+        guard let down else { return nil }
+        let up = up ?? NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(up, $0.frame, false) }) else { return nil }
+        let scale = screen.backingScaleFactor
         let size = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        guard abs(rect.width - size.width) <= 3, abs(rect.height - size.height) <= 3 else { return nil }
-        return NSRect(origin: rect.origin, size: size)
+        // Not a drag of about that size: a window was picked.
+        guard abs(abs(up.x - down.x) - size.width) <= 40, abs(abs(up.y - down.y) - size.height) <= 40 else { return nil }
+        let frame = NSRect(x: down.x < up.x ? up.x - size.width : up.x, y: down.y < up.y ? up.y - size.height : up.y,
+                           width: size.width, height: size.height)
+        return FloatingImages.placement(of: image, at: frame)
     }
 }
 

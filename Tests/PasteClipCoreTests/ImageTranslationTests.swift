@@ -76,17 +76,17 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
 }
 
 @Test func translatingTheScreenTakesShiftCommand2() throws {
-    let fresh = AppSettings(defaults: UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!)
+    let fresh = AppSettings(defaults: Scratch.defaults())
     #expect(fresh.translateScreenHotKey?.display == "⇧⌘2")
     #expect(fresh.captureTextHotKey?.display == "⌥⇧⌘2")
     // Someone who saved ⇧⌘2 for copying text (Reset Shortcuts saves every default) gets it moved.
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     defaults.set(try JSONEncoder().encode(KeyCombo.translateScreen), forKey: "captureTextHotKey")
     let updated = AppSettings(defaults: defaults)
     #expect(updated.captureTextHotKey == .captureText)
     #expect(updated.translateScreenHotKey == .translateScreen)
     // A shortcut of their own choosing stays.
-    let own = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let own = Scratch.defaults()
     let mine = KeyCombo(keyCode: 0, modifiers: KeyCombo.control | KeyCombo.option, keyName: "A")
     own.set(try JSONEncoder().encode(mine), forKey: "captureTextHotKey")
     #expect(AppSettings(defaults: own).captureTextHotKey == mine)
@@ -191,7 +191,7 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
 }
 
 @Test func savingTranslatedImagesCanBeTurnedOff() {
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
     #expect(settings.saveImageTranslations)
     settings.saveImageTranslations = false
@@ -201,7 +201,7 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
 }
 
 @Test func translatingImagesInTheShelfHasItsOwnShortcut() throws {
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
     #expect(settings.translateImageKey?.display == "⌃⌥Space")
     settings.translateImageKey = KeyCombo(keyCode: 17, modifiers: KeyCombo.control | KeyCombo.shift, keyName: "T")

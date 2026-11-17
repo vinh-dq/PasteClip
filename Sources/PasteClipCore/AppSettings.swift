@@ -42,7 +42,7 @@ public struct KeyCombo: Codable, Equatable {
     // Space = 49. Only active while the shelf is open, where ⌃Space translates text.
     public static let translateImage = KeyCombo(keyCode: 49, modifiers: control | option, keyName: "Space")
     // P = 35. Floats the latest image, or the ones selected in the shelf.
-    public static let floatImage = KeyCombo(keyCode: 35, modifiers: command | shift, keyName: "P")
+    public static let floatImage = KeyCombo(keyCode: 35, modifiers: command | option, keyName: "P")
 
     /// Whether macOS has this shortcut turned on for itself (System Settings → Keyboard → Keyboard
     /// Shortcuts), such as ⌃Space for switching input sources. macOS gets the key first then.
@@ -69,11 +69,12 @@ public struct KeyCombo: Codable, Equatable {
 
 /// What happens to a screenshot of an area once it's saved and copied.
 public enum ScreenshotAction: String, CaseIterable, Identifiable {
-    case copy, edit, float
+    case offer, copy, edit, float
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
+        case .offer: return "Copy it and offer Edit, Float and Translate"
         case .copy: return "Copy it"
         case .edit: return "Copy it and open it for marking up"
         case .float: return "Copy it and float it on the screen"
@@ -246,7 +247,7 @@ public final class AppSettings: ObservableObject {
         screenshotHotKey = Self.load(defaults, "screenshotHotKey", default: .captureArea)
         translateScreenHotKey = Self.load(defaults, "translateScreenHotKey", default: .translateScreen)
         translateImageKey = Self.load(defaults, "translateImageKey", default: .translateImage)
-        screenshotAction = ScreenshotAction(rawValue: defaults.string(forKey: "screenshotAction") ?? "") ?? .copy
+        screenshotAction = ScreenshotAction(rawValue: defaults.string(forKey: "screenshotAction") ?? "") ?? .offer
         quickPasteModifier = ModifierKey(rawValue: defaults.string(forKey: "quickPasteModifier") ?? "") ?? .command
         plainTextModifier = ModifierKey(rawValue: defaults.string(forKey: "plainTextModifier") ?? "") ?? .shift
         pasteMode = PasteMode(rawValue: defaults.string(forKey: "pasteMode") ?? "") ?? .frontApp
@@ -274,6 +275,14 @@ public final class AppSettings: ObservableObject {
         if defaults.data(forKey: "translateScreenHotKey") == nil, captureTextHotKey == .translateScreen {
             captureTextHotKey = .captureText
             store(captureTextHotKey, "captureTextHotKey")
+        }
+        // Floating an image was ⇧⌘P, VS Code's Command Palette, at first; a key kept as it was moves
+        // to the new default once.
+        if !defaults.bool(forKey: "floatImageKeyMoved") {
+            if floatImageKey == KeyCombo(keyCode: 35, modifiers: KeyCombo.command | KeyCombo.shift, keyName: "P") {
+                floatImageKey = .floatImage
+            }
+            defaults.set(true, forKey: "floatImageKeyMoved")
         }
     }
 

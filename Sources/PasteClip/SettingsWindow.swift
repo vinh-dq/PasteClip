@@ -907,8 +907,7 @@ private struct ShortcutsPage: View {
                 LabeledContent("Float latest image") { ShortcutField(combo: $settings.floatImageKey, settings: settings) }
                 LabeledContent("Translate selection or clipboard") { ShortcutField(combo: $settings.translateHotKey, settings: settings) }
             } footer: {
-                Text("These work from any app, and come before the app's own shortcuts: ⇧⌘P, for one, is also VS Code's "
-                     + "Command Palette. Change or clear any that get in the way.")
+                Text("These work from any app, and come before the app's own shortcuts. Change or clear any that get in the way.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

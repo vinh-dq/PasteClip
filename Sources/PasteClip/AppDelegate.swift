@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var stackPanel = StackController(store: store, settings: settings)
     private lazy var screenText = ScreenTextCapture(store: store, settings: settings)
     private lazy var screenshot = ScreenshotCapture(store: store, settings: settings)
+    private let screenshotOffer = ScreenshotOffer()
     private lazy var screenTranslation = ScreenTranslation()
     private lazy var translation = TranslationController(store: store, settings: settings, keys: apiKeys)
     private lazy var imageEditors = ImageEditors(store: store, settings: settings)
@@ -47,12 +48,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.play("Tink")
             switch self.settings.screenshotAction {
+            case .offer:
+                guard let image = self.store.image(for: item) else { return }
+                self.screenshotOffer.sharingType = self.settings.hideDuringScreenSharing ? .none : .readOnly
+                self.screenshotOffer.show(item, image: image) { [weak self] choice in
+                    guard let self, let current = self.store.item(withID: item.id) else { return }
+                    switch choice {
+                    case .edit: self.imageEditors.edit(current)
+                    case .float: self.floatingImages.show(current)
+                    case .translate: self.floatingImages.show(current, translate: true)
+                    }
+                }
             case .copy: break
             case .edit: self.imageEditors.edit(item)
             case .float: self.floatingImages.show(item)
             }
         }
         store.start()
+        // Text in images reads at once the first time too, instead of after most of a minute.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [languages = settings.textLanguages] in
+            TextRecognizer.warmUp(languages: languages)
+        }
         // Moves keys left in a plain file by earlier builds into the keychain, without reading it otherwise.
         _ = apiKeys
         setupStatusItem()

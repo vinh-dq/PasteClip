@@ -49,9 +49,9 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Translate**: ⌃Space translates the selected text (or the clipboard) in a small panel by the pointer. It picks the language for you: Vietnamese text into English, anything else into Vietnamese; 1–4 switch between Vietnamese, English, Japanese and Chinese. Return copies, ⌘Return pastes the translation back into the app. With the shelf open, ⌃Space translates the selected clips instead. Uses Google Translate or Bing Translator (free, no key) or Apple's on-device translation; Google Cloud, DeepL and Microsoft, and the AI models of OpenAI, Claude, Gemini, DeepSeek and Grok, work with your own API key (the model can be chosen)
 - **Preview and edit**: Space for a large preview (Quick Look for images and files), give clips a title, edit text clips
 - **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
-- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it, and can open it for marking up or float it right away
+- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T)
 - **Translate images**: the translation drawn where the text is, like a camera translator. ⇧⌘2 does it for an area of the screen, in place; ⌃⌥Space for images in the shelf; T on a floating image. The translated image is saved as a clip (can be turned off in Settings → Translation)
-- **Float images**: ⇧⌘P keeps an image above every window. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
+- **Float images**: ⌥⌘P keeps an image above every window. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
 - **Direct paste** into the current app, or paste as plain text (needs Accessibility permission)
 - **Privacy**: skips clips that password managers mark as private, and anything copied in apps you exclude
 - **Settings**: paste into the front app or only copy, always plain text, history retention, translation (languages and their order, service, API keys), privacy options (screen sharing, link previews, passwords, temporary clips, ignored apps), shortcuts, sounds, launch at login
@@ -82,17 +82,17 @@ app is signed ad hoc, macOS treats each rebuild as a new app, and asks for permi
 ## Global shortcuts
 
 All eight can be changed or removed in Settings → Shortcuts. They come before the app in front's own
-shortcuts: ⇧⌘P is also VS Code's Command Palette, for instance, so change it there if you use both.
+shortcuts, so change any that get in the way.
 
 | Key | Action |
 |---|---|
 | ⇧⌘V | Open or close the shelf |
 | ⌃⌘C | Start or stop the paste stack |
 | ⌃⌘V | Paste the next clip from the stack |
-| ⇧⌘1 | Screenshot of an area (or a window, with Space), saved as a clip and copied; Settings → General can also open it for marking up or float it |
+| ⇧⌘1 | Screenshot of an area (or a window, with Space), saved as a clip and copied; a card in the corner offers Edit E, Float P, Translate T (Settings → General can instead always copy, edit or float) |
 | ⇧⌘2 | Translate an area of the screen: the translation floats over it, where the text was |
 | ⌥⇧⌘2 | Copy text from an area of the screen |
-| ⇧⌘P | Float the latest image (with the shelf open: the selected images) |
+| ⌥⌘P | Float the latest image (with the shelf open: the selected images) |
 | ⌃Space | Translate the selected text, or the clipboard |
 
 ⌃Space is also macOS's shortcut for switching input sources. If that one is turned on
@@ -123,18 +123,20 @@ turn it off there or pick another shortcut. Settings shows a warning next to any
 | ⌘Z / ⇧⌘Z | Undo / redo |
 | ⌘+ ⌘− ⌘0 | Zoom in, out, fit |
 | Esc / Return / ⌘S | Save as a new clip and close (in crop: Esc cancels, Return applies) |
-| ⌘C / ⇧⌘P | Save, then copy / float it |
+| ⌘C / ⌥⌘P | Save, then copy / float it |
 | ⌥Esc | Close without saving |
 
 ## On a floating image
+
+These work with the pointer over the image, without clicking it first.
 
 | Key | Action |
 |---|---|
 | Scroll up / down, ↑ ↓ | Clearer / fainter |
 | Pinch, ⌘ scroll, ⌘+ ⌘−, − + in the readout | Zoom |
 | ⌘0 / double-click | Actual size / fit |
-| T / hold Space / 1…9 | Translate where the text is, or back to the original / peek at the original / into another language |
-| G | Open the original image in Google Translate's Images page: it's opened and pasted there for you, and the floating image closes |
+| T / hold Space / ← → or 1…9 | Translate where the text is, or back to the original / peek at the original / into the previous, next or that language |
+| G | Open the original image in Google Translate's Images page: it's opened (in the Google Translate tab already open, if there is one) and pasted there for you, and the floating image closes |
 | E / ⌘C | Edit / copy |
 | L | Lock: clicks pass through. The strip under it still shows when the pointer is over it, with the button to unlock it |
 | Esc / ⌘W | Close |
@@ -152,7 +154,7 @@ turn it off there or pick another shortcut. Settings shows a warning next to any
 | ⌘1…⌘9 | Paste a card quickly |
 | Space / ⌘Y | Preview in a popup above the card; ← → move it to the next clip (Space works when the search field is empty) |
 | ⌘E | Edit a text clip (⌘S saves, Esc cancels), or mark up an image (also a single copied image file) |
-| ⇧⌘P | Float the selected images on the screen (configurable) |
+| ⌥⌘P | Float the selected images on the screen (configurable) |
 | ⌘P | Pin / unpin |
 | ⌘C | Copy without pasting (several cards: copied together) |
 | ⌃Space (the translate shortcut) | Translate the selected clips: text, or the text in an image (read on the spot if it hasn't been yet) |

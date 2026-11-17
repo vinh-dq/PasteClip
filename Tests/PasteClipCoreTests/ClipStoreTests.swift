@@ -6,9 +6,8 @@ import Testing
 /// Each test gets its own history folder and a private pasteboard, so the user's
 /// real clipboard and history are never touched.
 private func makeStore() -> (ClipStore, NSPasteboard, URL) {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("PasteClipTests-\(UUID().uuidString)", isDirectory: true)
-    let pasteboard = NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)"))
+    let dir = Scratch.folder()
+    let pasteboard = Scratch.pasteboard()
     return (ClipStore(directory: dir, pasteboard: pasteboard), pasteboard, dir)
 }
 
@@ -491,7 +490,7 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
 
     // Still there after a restart with a tighter limit.
     store.flush()
-    let reopened = ClipStore(directory: dir, pasteboard: NSPasteboard(name: .init("PasteClipTests-\(UUID().uuidString)")))
+    let reopened = ClipStore(directory: dir, pasteboard: Scratch.pasteboard())
     reopened.historyLimit = 1
     #expect(kept(reopened) == ["a", "b", "c", "3"])
 }
@@ -599,7 +598,7 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
 }
 
 @Test func settingsKeepClearedShortcutsCleared() {
-    let defaults = UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!
+    let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
     #expect(settings.shelfHotKey == .openShelf)
     settings.shelfHotKey = nil
@@ -621,7 +620,7 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
 }
 
 @Test func resetShortcutsRestoresDefaults() {
-    let settings = AppSettings(defaults: UserDefaults(suiteName: "PasteClipTests-\(UUID().uuidString)")!)
+    let settings = AppSettings(defaults: Scratch.defaults())
     settings.shelfHotKey = nil
     settings.nextPinboardKey = nil
     settings.quickPasteModifier = .option

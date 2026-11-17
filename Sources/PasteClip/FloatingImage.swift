@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import PasteClipCore
 import PasteClipSystem
+import ScriptingBridge
 import SwiftUI
 
 /// Images floated above every window, for keeping something in view while you work. Scrolling
@@ -19,8 +20,16 @@ final class FloatingImages {
     /// floating image (PasteClip stays in the background) never gets it. This tap sees every
     /// pinch while images float, zooms the one under the pointer, and keeps the pinch from the
     /// app behind. Without Accessibility permission it can only watch, not keep it.
+    /// The same tap gives keys to the image under the pointer, so T, ← → and the rest work
+    /// without clicking it first, while the app in front keeps its focus: from when the pointer
+    /// comes onto an image, until a key the image doesn't take. Typing on in another app with
+    /// the pointer resting on an image is left alone, as the pointer got there before the typing.
     private var pinchTap: CFMachPort?
     private var pinchSource: CFRunLoopSource?
+    /// When the last key went to another app.
+    private var keyElsewhere = Date.distantPast
+    /// Space held down over an image, which gets its release too, wherever the pointer is then.
+    private weak var spaceHeldBy: FloatingImageWindow?
     var onEdit: (ClipItem) -> Void = { _ in }
 
     init(store: ClipStore, settings: AppSettings, keys: APIKeys) {
@@ -33,11 +42,12 @@ final class FloatingImages {
     var hasLocked: Bool { windows.contains { $0.state.locked } }
 
     /// Floats an image clip, translated straight away if `translate` (into `target`, or the
-    /// first language in Settings it isn't in).
+    /// first language in Settings it isn't in). A screenshot taken by PasteClip floats over the
+    /// spot it was taken from, others by the pointer.
     func show(_ item: ClipItem, translate: Bool = false, target: String? = nil) {
         guard let url = store.pictureURL(for: item), let image = item.kind == .image ? store.image(for: item) : NSImage(contentsOf: url),
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return NSSound.beep() }
-        let window = open(cgImage, item: item, placement: nil)
+        let window = open(cgImage, item: item, placement: item.screenFrame.flatMap { Self.placement(of: cgImage, at: $0) })
         if translate { self.translate(window, to: target) }
     }
 
@@ -45,6 +55,18 @@ final class FloatingImages {
     /// translates it, so the translation reads in place of the text there.
     func showTranslated(_ image: CGImage, over placement: NSRect?) {
         translate(open(image, item: nil, placement: placement), to: nil)
+    }
+
+    /// `frame` on screen, sized exactly as `image` shows there, when the image is that size
+    /// (within a few points) on the screen holding it; nil otherwise, or when no screen shows
+    /// that spot any more.
+    static func placement(of image: CGImage, at frame: CGRect) -> NSRect? {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) })
+        else { return nil }
+        let scale = screen.backingScaleFactor
+        let size = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        guard abs(frame.width - size.width) <= 3, abs(frame.height - size.height) <= 3 else { return nil }
+        return NSRect(origin: frame.origin, size: size)
     }
 
     private func open(_ image: CGImage, item: ClipItem?, placement: NSRect?) -> FloatingImageWindow {
@@ -140,7 +162,8 @@ final class FloatingImages {
         }
         guard pinchTap == nil else { return }
         // Trackpad gestures arrive as CGEvent type 29; AppKit turns pinches among them into .magnify.
-        let gesture = CGEventMask(1) << 29
+        let gesture = CGEventMask(1) << 29 | CGEventMask(1) << CGEventType.keyDown.rawValue
+            | CGEventMask(1) << CGEventType.keyUp.rawValue
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
                                           options: Paster.isTrusted ? .defaultTap : .listenOnly,
                                           eventsOfInterest: gesture, callback: { _, type, event, owner in
@@ -150,6 +173,7 @@ final class FloatingImages {
                 if let tap = images.pinchTap { CGEvent.tapEnable(tap: tap, enable: true) }
                 return Unmanaged.passUnretained(event)
             }
+            if type == .keyDown || type == .keyUp { return images.key(event) ? nil : Unmanaged.passUnretained(event) }
             return images.pinch(event) ? nil : Unmanaged.passUnretained(event)
         }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
         let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
@@ -169,6 +193,26 @@ final class FloatingImages {
         return true
     }
 
+    /// A key for the image under the pointer, as above; false lets it go on to the app in front.
+    private func key(_ event: CGEvent) -> Bool {
+        guard Paster.isTrusted, let ns = NSEvent(cgEvent: event) else { return false }
+        if ns.type == .keyUp, ns.keyCode == 49, let window = spaceHeldBy {
+            spaceHeldBy = nil
+            return window.handle(ns)
+        }
+        guard let window = windows.last(where: { $0.pointerOver && !$0.state.locked }),
+              window.pointerArrived > keyElsewhere else {
+            if ns.type == .keyDown { keyElsewhere = Date() }
+            return false
+        }
+        guard window.handle(ns) else {
+            if ns.type == .keyDown { keyElsewhere = Date() }
+            return false
+        }
+        if ns.type == .keyDown, ns.keyCode == 49 { spaceHeldBy = window }
+        return true
+    }
+
     func closeAll() { windows.forEach { $0.close() } }
 
     func unlockAll() { windows.forEach { $0.setLocked(false) } }
@@ -183,11 +227,58 @@ final class FloatingImages {
               let url = URL(string: "https://translate.google.com/?sl=auto&tl=\(code)&op=images") else { return NSSound.beep() }
         store.copyImageWithoutSaving(png)
         let browser = NSWorkspace.shared.urlForApplication(toOpen: url).flatMap { Bundle(url: $0)?.bundleIdentifier }
-        NSWorkspace.shared.open(url)
         guard Paster.isTrusted, let browser else {
+            NSWorkspace.shared.open(url)
             return window.flash("Copied · press ⌘V on the Google Translate page")
         }
         window.close()
+        Self.reuseTab(in: browser, for: url) { [weak self] reused in
+            if !reused { NSWorkspace.shared.open(url) }
+            self?.paste(into: browser, reloading: reused)
+        }
+    }
+
+    /// Brings up a Google Translate tab already open in `browser`, loading `url` in it, and
+    /// says whether there was one. Tabs are only told apart by their addresses, which only the
+    /// browser's scripting gives (macOS asks once to let PasteClip control the browser; without
+    /// that, or in a browser it doesn't know, a new tab opens as before). Each copy of the
+    /// browser running is asked: another one (started by some tool) may have no windows.
+    private static func reuseTab(in browser: String, for url: URL, done: @escaping (Bool) -> Void) {
+        let chromium = ["com.google.Chrome", "com.microsoft.edgemac", "com.brave.Browser", "com.vivaldi.Vivaldi"]
+        guard chromium.contains(browser) || browser == "com.apple.Safari" else { return done(false) }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: browser)
+        // Off the main thread: macOS's question about controlling the browser waits for an answer.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let found = running.first { app in
+                guard let scripting = SBApplication(processIdentifier: app.processIdentifier) else { return false }
+                return Self.showTranslateTab(in: scripting, safari: browser == "com.apple.Safari", url: url)
+            }
+            DispatchQueue.main.async {
+                found?.activate()
+                done(found != nil)
+            }
+        }
+    }
+
+    private static func showTranslateTab(in browser: SBApplication, safari: Bool, url: URL) -> Bool {
+        guard let windows = browser.value(forKey: "windows") as? SBElementArray else { return false }
+        for case let window as SBObject in windows {
+            guard let tabs = window.value(forKey: "tabs") as? SBElementArray else { continue }
+            for (i, element) in tabs.enumerated() {
+                guard let tab = element as? SBObject,
+                      (tab.value(forKey: "URL") as? String)?.hasPrefix("https://translate.google.") == true else { continue }
+                tab.setValue(url.absoluteString, forKey: "URL")
+                if safari { window.setValue(tab, forKey: "currentTab") } else { window.setValue(i + 1, forKey: "activeTabIndex") }
+                window.setValue(1, forKey: "index")
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Pastes the image on the clipboard into the Google Translate page once it's ready, as
+    /// below. `reloading`: a tab reused, which shows its earlier page until the new one starts.
+    private func paste(into browser: String, reloading: Bool) {
         let changeCount = NSPasteboard.general.changeCount
         let deadline = Date().addingTimeInterval(20)
         // The page's address and loading state come from Accessibility (a window title won't do:
@@ -197,6 +288,7 @@ final class FloatingImages {
         // translation is in; pasting again then would only start that over. A slow start (the
         // browser restoring its tabs, a slow network) just waits longer.
         var exposed = false
+        var sawLoading = !reloading
         var inFront: Date?
         var loaded: (at: Date, url: URL?)?
         var pasted: (at: Date, elements: Int)?
@@ -214,9 +306,12 @@ final class FloatingImages {
                 return Paster.pasteIntoFrontApp()
             }
             guard page.loaded, page.url?.host?.hasPrefix("translate.google.") == true else {
+                sawLoading = true
                 loaded = nil
                 return next()
             }
+            // A reused tab: not the page it showed before, still there for a moment.
+            guard sawLoading || waited > 3 else { return next() }
             // Another tab came to the front: start over there.
             if loaded?.url != page.url { (loaded, pasted) = ((Date(), page.url), nil) }
             guard Date().timeIntervalSince(loaded!.at) > 0.4 else { return next() }
@@ -239,7 +334,7 @@ final class FloatingImages {
         guard let png = MarkupRenderer.pngData(image) else { return nil }
         let name = Translator.name(of: target)
         return store.addImage(png, title: window.item?.title.map { "\($0) · \(name)" } ?? "\(name) translation",
-                              source: "Translation")
+                              source: "Translation", screenFrame: window.placement)
     }
 
     private func copy(_ item: ClipItem?, image: CGImage) {
@@ -342,6 +437,14 @@ final class FloatingImageWindow {
     var reading: ImageTranslator.Reading?
     /// Translations already drawn, by language.
     var translations: [String: CGImage] = [:]
+    /// The pointer is over the image or its strip.
+    var pointerOver: Bool { state.hovering || state.stripHovering }
+    /// When the pointer last came onto the image or its strip.
+    private(set) var pointerArrived = Date.distantPast
+    /// Where on screen the image was taken from, when it floats over that spot.
+    let placement: NSRect?
+    /// The language last asked for or shown, which ← → step from.
+    private var chosenLanguage: String?
     /// The image's size on screen at 100%: its pixels on a Retina display.
     private let baseSize: CGSize
     private let content: FloatingImageView
@@ -364,13 +467,13 @@ final class FloatingImageWindow {
     /// `placement` puts it exactly there (on screen) instead of by the pointer.
     init(item: ClipItem?, image: CGImage, cascade: Int, placement: NSRect? = nil) {
         self.item = item
+        self.placement = placement
         original = image
         let point = placement.map { NSPoint(x: $0.midX, y: $0.midY) } ?? NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main!
         let scale = screen.backingScaleFactor
         baseSize = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        // Over its own spot on screen, square corners line up with what's around it.
-        content = FloatingImageView(image: image, state: state, cornerRadius: placement == nil ? 10 : 3)
+        content = FloatingImageView(image: image, state: state, cornerRadius: 10)
         content.window_ = self
         panel.contentView = content
         panel.onKey = { [weak self] event in self?.handle(event) ?? false }
@@ -419,6 +522,11 @@ final class FloatingImageWindow {
         state.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.updateStrip() }
+            .store(in: &subscriptions)
+        state.$hovering.combineLatest(state.$stripHovering)
+            .map { $0 || $1 }
+            .removeDuplicates()
+            .sink { [weak self] over in if over { self?.pointerArrived = Date() } }
             .store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
             .merge(with: NotificationCenter.default.publisher(for: NSWindow.didResizeNotification, object: panel))
@@ -574,6 +682,7 @@ final class FloatingImageWindow {
         translatedClip = clip
         state.status = nil
         state.language = target
+        chosenLanguage = target
         // Also when a translation into another language replaces the one showing.
         state.showsTranslation = true
         content.setImage(image)
@@ -631,6 +740,8 @@ final class FloatingImageWindow {
         case 53: close(); return true                                  // Esc
         case 126: setOpacity(state.opacity + 0.1); return true         // ↑
         case 125: setOpacity(state.opacity - 0.1); return true         // ↓
+        case 123 where f.isEmpty: stepLanguage(by: -1); return true    // ←
+        case 124 where f.isEmpty: stepLanguage(by: 1); return true     // →
         default: break
         }
         if f == .command {
@@ -654,9 +765,33 @@ final class FloatingImageWindow {
             // 1…9: into that language of Settings' list.
             let targets = translationTargets()
             guard let n = Int(chars), (1...min(9, targets.count)).contains(n) else { return false }
-            onTranslate(targets[n - 1])
+            translate(into: targets[n - 1])
         }
         return true
+    }
+
+    private func translate(into language: String) {
+        chosenLanguage = language
+        onTranslate(language)
+    }
+
+    /// Translates into the previous or next language of Settings' list, going round and passing
+    /// over any the text is all in already; into the first language the text isn't in, when
+    /// there's no translation yet.
+    private func stepLanguage(by step: Int) {
+        let targets = translationTargets()
+        guard let current = chosenLanguage ?? state.language, let i = targets.firstIndex(of: current) else {
+            if state.status == nil { onTranslate(nil) }
+            return
+        }
+        let read = reading?.languages.compactMap { $0 } ?? []
+        for n in 1..<max(targets.count, 1) {
+            let target = targets[(i + step * n + targets.count * n) % targets.count]
+            if read.isEmpty || !read.allSatisfy({ ImageTranslation.isAlready($0, in: target) }) {
+                return translate(into: target)
+            }
+        }
+        flash("No other language to translate into")
     }
 
     /// Shows the translation, translating first if need be, or the original again.
@@ -889,8 +1024,8 @@ struct FloatStrip: View {
             } else {
                 HStack(spacing: 8) {
                     if state.showsTranslation, let language = state.language {
-                        Label(Translator.name(of: language), systemImage: "character.bubble")
-                            .help("1–9 for another language")
+                        Label(Translator.shortName(of: language), systemImage: "character.bubble")
+                            .help("\(Translator.name(of: language)) · ← → or 1–9 for another language")
                     }
                     Label("\(Int((state.opacity * 100).rounded()))%", systemImage: "circle.lefthalf.filled")
                         .help("Scroll up or down over the image to make it clearer or fainter (↑ ↓)")

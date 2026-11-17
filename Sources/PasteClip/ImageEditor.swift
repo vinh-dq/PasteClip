@@ -120,7 +120,9 @@ final class ImageEditorController: NSObject, NSWindowDelegate {
             // The marked-up image is a new clip; the original is left alone.
             guard let image = model.renderer.render(model.marks, crop: model.crop),
                   let png = MarkupRenderer.pngData(image),
-                  let saved = store.addImage(png, title: item.title) else { return NSSound.beep() }
+                  // Uncropped, it still floats over the spot it was taken from.
+                  let saved = store.addImage(png, title: item.title, screenFrame: model.crop == nil ? item.screenFrame : nil)
+            else { return NSSound.beep() }
             result = saved
         }
         switch action {
