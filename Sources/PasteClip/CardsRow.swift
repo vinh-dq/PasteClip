@@ -24,12 +24,17 @@ struct CardsRow: View {
             let stack = Set(store.stack)
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 16) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            card(item, index: index, inStack: stack.contains(item.id))
+                    LazyHStack(spacing: 14) {
+                        // Each day label is a child of the row of its own, beside the cards.
+                        ForEach(entries(items)) { entry in
+                            switch entry {
+                            case .day(let date): DayLabel(date: date)
+                            case .card(let index, let item): card(item, index: index, inStack: stack.contains(item.id))
+                            }
                         }
                     }
-                    .padding(.vertical, 8)
+                    // Room for the selected card's lift and ring.
+                    .padding(.vertical, 12)
                     // Room for the reorder bar beside the first and last cards.
                     .padding(.horizontal, 12)
                 }
@@ -44,10 +49,11 @@ struct CardsRow: View {
                         board: item.pinboardID.flatMap(store.pinboard(withID:)),
                         inStack: inStack,
                         showLinkPreview: settings.linkPreviews,
-                        quickPasteSymbol: settings.quickPasteModifier.symbol,
                         renaming: state.renamingID == item.id,
                         onEndRenaming: { if state.renamingID == item.id { state.renamingID = nil } })
             .equatable()
+            .modifier(QuickPasteNumber(keys: state.heldKeys, index: index, symbol: settings.quickPasteModifier.symbol))
+            .modifier(HoverLift())
             .modifier(SelectionRing(selection: selection, index: index, id: item.id,
                                     cardFrame: state.previewing ? state.cardFrame : nil))
             .id(item.id)
@@ -59,10 +65,10 @@ struct CardsRow: View {
             .onDrop(of: [ClipDrag.type], delegate: ReorderDropDelegate(target: item, index: index, state: state, store: store))
             // A single click selects at once; the double-click is recognised alongside it
             // instead of making every click wait to see whether a second one follows.
-            // Double-clicking the header renames the clip; anywhere else pastes it.
+            // Double-clicking its label renames the clip; anywhere else pastes it.
             .gesture(TapGesture().onEnded { state.click(index) })
             .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { tap in
-                if tap.location.y < ClipCard.headerHeight {
+                if tap.location.y < ClipCard.labelHeight {
                     state.startRenaming(index)
                 } else {
                     state.onPaste(item, Self.isHeld(settings.plainTextModifier))
@@ -79,6 +85,21 @@ struct CardsRow: View {
         case .control: return flags.contains(.control)
         case .shift: return flags.contains(.shift)
         }
+    }
+
+    /// The cards, and in History (newest first) a day's label before the first card of each
+    /// day. Pinboards keep their own order, so they go without.
+    private func entries(_ items: [ClipItem]) -> [RowEntry] {
+        let history = state.query.pinboardID == nil
+        var entries: [RowEntry] = []
+        entries.reserveCapacity(items.count + 8)
+        for (index, item) in items.enumerated() {
+            if history, index == 0 || !Calendar.current.isDate(items[index - 1].date, inSameDayAs: item.date) {
+                entries.append(.day(item.date))
+            }
+            entries.append(.card(index, item))
+        }
+        return entries
     }
 
     private var emptyMessage: String {
@@ -196,15 +217,39 @@ private struct SelectionRing: ViewModifier {
     func body(content: Content) -> some View {
         let selected = selection.isSelected(index, id: id)
         let focused = index == selection.index
+        let several = selected && selection.picked.count > 1
         content
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: ClipCard.cornerRadius, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.3))
+                        .blur(radius: 12)
+                        .offset(y: 5)
+                }
+            }
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
-                    .padding(-1.5)
+                RoundedRectangle(cornerRadius: ClipCard.cornerRadius + 3, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(-3)
                     .opacity(selected ? 1 : 0)
             )
-            .scaleEffect(selected ? 1 : 0.97)
-            .animation(.easeOut(duration: 0.1), value: selected)
+            // Several selected: a tick on each, as in Photos.
+            .overlay(alignment: .topTrailing) {
+                if several {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.accentColor))
+                        .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                        .padding(7)
+                        .transition(.scale(scale: 0.5).combined(with: .opacity))
+                }
+            }
+            .scaleEffect(selected ? 1.03 : 1)
+            .offset(y: selected ? -3 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.72), value: selected)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: several)
             .background { if focused, let cardFrame { frameReporter(cardFrame) } }
     }
 
@@ -215,6 +260,85 @@ private struct SelectionRing: ViewModifier {
                 .onAppear { tracker.frame = g.frame(in: .global) }
                 .onChange(of: g.frame(in: .global)) { _, frame in tracker.frame = frame }
         }
+    }
+}
+
+/// One child of the card row: a card, or the label of the day the cards after it were copied.
+private enum RowEntry: Identifiable {
+    case day(Date)
+    case card(Int, ClipItem)
+
+    var id: String {
+        switch self {
+        case .day(let date): return "day-\(Calendar.current.startOfDay(for: date).timeIntervalSince1970)"
+        case .card(_, let item): return item.id.uuidString
+        }
+    }
+}
+
+/// A card rises a little under the pointer. Each card watches its own hover, so moving over
+/// the row redraws only the cards entered and left.
+private struct HoverLift: ViewModifier {
+    @StateObject private var hovering = ViewState(false)
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(hovering.value ? 1.015 : 1)
+            .offset(y: hovering.value ? -2 : 0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: hovering.value)
+            .onHover { hovering.value = $0 }
+    }
+}
+
+/// The card's quick-paste key (⌘1…⌘9), only while that modifier is held, so the cards stay
+/// clear otherwise.
+private struct QuickPasteNumber: ViewModifier {
+    @ObservedObject var keys: HeldKeys
+    let index: Int
+    let symbol: String
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .bottomTrailing) {
+            if index < 9, keys.quickPaste {
+                Text("\(symbol)\(index + 1)")
+                    .font(.system(size: 11, weight: .bold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(Capsule().fill(Color.black.opacity(0.68)))
+                    .padding(9)
+                    .transition(.scale(scale: 0.7).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.22, dampingFraction: 0.7), value: keys.quickPaste)
+    }
+}
+
+/// The day the cards after it were copied, written up the side between two cards.
+private struct DayLabel: View {
+    let date: Date
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(1.2)
+            .textCase(.uppercase)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .rotationEffect(.degrees(-90))
+            .frame(width: 12, height: ClipCard.size.height)
+    }
+
+    private var title: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        if let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: Date())).day,
+           days < 7 {
+            return date.formatted(.dateTime.weekday(.wide))
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day())
     }
 }
 

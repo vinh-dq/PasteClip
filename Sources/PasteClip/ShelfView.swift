@@ -68,6 +68,17 @@ final class SelectionModel: ObservableObject {
     }
 }
 
+/// Modifier keys held while the shelf is open, for what shows only then. Separate from
+/// `ShelfState` so that pressing one redraws the numbers on the cards, not the shelf.
+final class HeldKeys: ObservableObject {
+    /// The quick-paste modifier (⌘ by default): the cards show their numbers.
+    @Published var quickPaste = false
+
+    func update(_ held: Bool) {
+        if quickPaste != held { quickPaste = held }
+    }
+}
+
 /// The card being dragged within the row and the card it is over. Separate from `ShelfState`
 /// so that hovering over cards doesn't redraw the whole shelf.
 final class ReorderModel: ObservableObject {
@@ -115,6 +126,7 @@ final class ShelfState: ObservableObject {
     @Published private(set) var sourceApps: [SourceApp] = []
 
     let cardFrame = CardFrameTracker()
+    let heldKeys = HeldKeys()
     let reorder = ReorderModel()
     let selectionModel = SelectionModel()
     let store: ClipStore
@@ -294,31 +306,27 @@ struct ShelfView: View {
 
     // MARK: - Top bar
 
-    /// Filters on the left, search and pinboard tabs in the middle, actions on the right.
+    /// Images and search (with its filters) first, then the pinboard tabs, then actions, faint
+    /// until the pointer is over them.
     private var topBar: some View {
-        ZStack {
-            HStack(spacing: 8) {
-                filterMenu
-                imagesToggle
-                Spacer()
-                if store.paused {
-                    Label("Paused", systemImage: "pause.circle.fill").foregroundStyle(.orange)
-                }
-                if store.stackMode {
-                    Label("\(store.stack.count)", systemImage: "square.stack.3d.up.fill")
-                        .foregroundStyle(Color.accentColor)
-                        .help("Paste stack")
-                }
-                moreMenu
+        HStack(spacing: 8) {
+            imagesToggle
+            searchField
+            boardTabs
+            Spacer(minLength: 4)
+            if store.paused {
+                Label("Paused", systemImage: "pause.circle.fill").foregroundStyle(.orange)
             }
-            HStack(spacing: 6) {
-                searchField
-                boardTabs
+            if store.stackMode {
+                Label("\(store.stack.count)", systemImage: "square.stack.3d.up.fill")
+                    .foregroundStyle(Color.accentColor)
+                    .help("Paste stack")
             }
-            .padding(.horizontal, 200) // keep clear of the side controls
+            newBoardButton
+            moreMenu
         }
         .font(.system(size: 13))
-        .frame(height: 30)
+        .frame(height: 32)
     }
 
     private var searchField: some View {
@@ -332,9 +340,11 @@ struct ShelfView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
             }
+            filterMenu
         }
-        .padding(.horizontal, 12)
-        .frame(width: searchFocused || !state.query.text.isEmpty ? 220 : 130, height: 30)
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .frame(width: searchFocused || !state.query.text.isEmpty || state.query.hasFilters ? 280 : 220, height: 32)
         .glassCapsule()
         .animation(.easeOut(duration: 0.15), value: searchFocused)
     }
@@ -370,25 +380,28 @@ struct ShelfView: View {
                         }
                     }
                 }
-                Button { newBoardShown.value = true } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 30, height: 30)
-                        .contentShape(Circle())
-                        .glassCircle()
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("New Pinboard")
-                .popover(isPresented: $newBoardShown.value) {
-                    PinboardEditor(board: nil) { name, color in
-                        let board = store.createPinboard(name: name, colorIndex: color)
-                        state.select(board: board.id)
-                        newBoardShown.value = false
-                    }
-                }
             }
         }
-        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var newBoardButton: some View {
+        Button { newBoardShown.value = true } label: {
+            Image(systemName: "plus")
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+                .glassCircle()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("New Pinboard")
+        .popover(isPresented: $newBoardShown.value) {
+            PinboardEditor(board: nil) { name, color in
+                let board = store.createPinboard(name: name, colorIndex: color)
+                state.select(board: board.id)
+                newBoardShown.value = false
+            }
+        }
+        .modifier(Faint())
     }
 
     /// A tab. Dropping a card on a pinboard tab moves the clip there; dropping it on History
@@ -451,30 +464,44 @@ struct ShelfView: View {
                 }
             }
         } label: {
-            Label(filterSummary, systemImage: state.query.hasFilters
-                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            if state.query.hasFilters {
+                Text(filterSummary)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .background(Capsule().fill(Color.accentColor))
+            } else {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+            }
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
-        .foregroundStyle(state.query.hasFilters ? Color.accentColor : Color.secondary)
+        .help("Filter by type, app or date")
     }
 
     /// One click (or ⌘I) for images only, and again for everything.
     private var imagesToggle: some View {
         let on = state.query.type == .image
         return Button { state.toggleImagesOnly() } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 6) {
                 Image(systemName: on ? "photo.fill" : "photo")
-                Text("Images").font(.system(size: 12, weight: .medium))
-                KeyHint(keys: "⌘I")
+                Text("Images").font(.system(size: 12.5, weight: .medium))
+                KeyHint(keys: "⌘I", onAccent: on)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .foregroundStyle(on ? Color.primary : Color.secondary)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .foregroundStyle(on ? Color.white : Color.primary)
             .contentShape(Capsule())
-            .glassCapsule(selected: on)
+            .background { if on { Capsule().fill(Color.accentColor).shadow(color: .accentColor.opacity(0.4), radius: 6, y: 2) } }
+            .modifier(GlassUnless(on: on))
         }
         .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.15), value: on)
         .help(on ? "Show every type (⌘I)" : "Show only images (⌘I)")
     }
 
@@ -507,8 +534,30 @@ struct ShelfView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .foregroundStyle(.secondary)
+        .modifier(Faint())
     }
 
+}
+
+/// Quiet until the pointer is over it, for controls used now and then.
+private struct Faint: ViewModifier {
+    @StateObject private var hovering = ViewState(false)
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(hovering.value ? 1 : 0.55)
+            .animation(.easeOut(duration: 0.15), value: hovering.value)
+            .onHover { hovering.value = $0 }
+    }
+}
+
+/// Glass behind a control unless it's on, when it has a fill of its own.
+private struct GlassUnless: ViewModifier {
+    let on: Bool
+
+    func body(content: Content) -> some View {
+        if on { content } else { content.glassCapsule() }
+    }
 }
 
 /// Writes a new text clip. It lands in the current pinboard when one is selected.

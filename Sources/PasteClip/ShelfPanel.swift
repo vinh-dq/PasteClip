@@ -34,6 +34,7 @@ final class ShelfController {
     private var clickMonitor: Any?
     private var localClickMonitor: Any?
     private var scrollMonitor: Any?
+    private var flagsMonitor: Any?
     private let height: CGFloat = 340
     /// Gap between the floating shelf and the screen edges.
     private let margin: CGFloat = 10
@@ -138,7 +139,23 @@ final class ShelfController {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
         }
+        rise(fromTop: top)
         installMonitors()
+    }
+
+    /// The shelf rises into place from its edge with a little spring. Only its layer moves, so
+    /// nothing is laid out again on the way.
+    private func rise(fromTop: Bool) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let layer = panel.contentView?.layer else { return }
+        let spring = CASpringAnimation(keyPath: "transform.translation.y")
+        spring.fromValue = fromTop ? 28 : -28
+        spring.toValue = 0
+        spring.mass = 1
+        spring.stiffness = 320
+        spring.damping = 22
+        spring.duration = spring.settlingDuration
+        layer.add(spring, forKey: "rise")
     }
 
     func hide() {
@@ -210,6 +227,20 @@ final class ShelfController {
             self.state.closePreview()
             return event
         }
+        // The cards show their quick-paste numbers while its modifier is held.
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self else { return event }
+            let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            let wanted: NSEvent.ModifierFlags
+            switch self.settings.quickPasteModifier {
+            case .command: wanted = .command
+            case .option: wanted = .option
+            case .control: wanted = .control
+            case .shift: wanted = .shift
+            }
+            self.state.heldKeys.update(flags == wanted)
+            return event
+        }
         // The card row scrolls a little faster than a plain scroll view. The popup keeps normal speed.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             if let self, event.window === self.panel { Self.scrollFurther(for: event, in: self.panel) }
@@ -251,6 +282,9 @@ final class ShelfController {
         clickMonitor = nil
         localClickMonitor = nil
         scrollMonitor = nil
+        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+        flagsMonitor = nil
+        state.heldKeys.update(false)
     }
 
     /// Returns true when the key was handled and shouldn't reach the focused text field.
@@ -432,6 +466,9 @@ final class ShelfController {
             return true
         case "i":
             state.toggleImagesOnly()
+            return true
+        case "r":
+            state.startRenaming(state.selection)
             return true
         case ",":
             state.onOpenSettings()

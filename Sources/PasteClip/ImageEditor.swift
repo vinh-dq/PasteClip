@@ -242,6 +242,9 @@ final class ImageEditorPanel: NSPanel {
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = false
         collectionBehavior = [.fullScreenAuxiliary]
+        // Clear, so the glass behind the canvas shows the desktop through it.
+        isOpaque = false
+        backgroundColor = .clear
     }
 
     override var canBecomeKey: Bool { true }
@@ -473,6 +476,9 @@ final class MarkupCanvasView: NSView, NSTextFieldDelegate {
     private var renderer: MarkupRenderer { model.renderer }
     private let imageHost = PassThroughView()
     private let imageLayer = CALayer()
+    /// The image's shadow, on a layer of its own: the image itself is clipped to its rounded
+    /// corners, which would clip a shadow of its own too.
+    private let shadowLayer = CALayer()
     private let overlay = MarkupOverlay()
     private var subscription: AnyCancellable?
     private var drag: Drag?
@@ -493,13 +499,13 @@ final class MarkupCanvasView: NSView, NSTextFieldDelegate {
         imageHost.wantsLayer = true
         imageHost.layer?.masksToBounds = true
         imageHost.layer?.backgroundColor = NSColor.white.cgColor
-        imageHost.shadow = {
-            let shadow = NSShadow()
-            shadow.shadowBlurRadius = 18
-            shadow.shadowOffset = NSSize(width: 0, height: -4)
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
-            return shadow
-        }()
+        imageHost.layer?.cornerRadius = 8
+        imageHost.layer?.cornerCurve = .continuous
+        shadowLayer.shadowColor = NSColor.black.cgColor
+        shadowLayer.shadowOpacity = 0.28
+        shadowLayer.shadowRadius = 9
+        shadowLayer.shadowOffset = CGSize(width: 0, height: -4)
+        layer?.addSublayer(shadowLayer)
         imageLayer.contents = model.renderer.image
         imageLayer.contentsGravity = .resize
         imageLayer.minificationFilter = .trilinear
@@ -545,6 +551,8 @@ final class MarkupCanvasView: NSView, NSTextFieldDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         imageHost.frame = CGRect(origin: origin, size: size)
+        shadowLayer.frame = imageHost.frame
+        shadowLayer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: size), cornerWidth: 8, cornerHeight: 8, transform: nil)
         // The host isn't flipped, so the image is placed from its bottom edge.
         imageLayer.frame = CGRect(x: -region.minX * scale, y: -(renderer.size.height - region.maxY) * scale,
                                   width: renderer.size.width * scale, height: renderer.size.height * scale)
@@ -987,7 +995,13 @@ struct ImageEditorView: View {
                 bottomBar.padding(.horizontal, 14).padding(.bottom, 14)
             }
         }
-        .background(Color(nsColor: .underPageBackgroundColor))
+        // Glass like the shelf and the preview, a little darker so the picture stands out.
+        .background {
+            ZStack {
+                GlassBackground(cornerRadius: 0)
+                Color.black.opacity(0.06)
+            }
+        }
         .ignoresSafeArea()
     }
 
@@ -1159,9 +1173,13 @@ struct BarButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Text(title).font(.system(size: 12, weight: .semibold))
-                if let keys { KeyHint(keys: keys, onAccent: prominent) }
+            HStack(spacing: 5) {
+                Text(title).font(.system(size: 12, weight: prominent ? .semibold : .medium))
+                if let keys {
+                    Text(keys)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .opacity(0.55)
+                }
             }
             .fixedSize()
             .padding(.horizontal, 11)

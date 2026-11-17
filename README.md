@@ -150,8 +150,8 @@ These work with the pointer over the image, without clicking it first.
 | ⌘-click | Add a card to the selection, or take it out |
 | ⌘A | Select every card (when the search is empty) |
 | Return / double-click | Paste into the app you were using (hold ⇧ for plain text). With several cards selected, Return pastes them together, a line apart |
-| Double-click a card's title | Rename the clip (Return saves, Esc cancels, empty resets) |
-| ⌘1…⌘9 | Paste a card quickly |
+| ⌘R / double-click a card's label | Name the clip; the name shows on the card instead of the time (Return saves, Esc cancels, empty removes it) |
+| ⌘1…⌘9 | Paste a card quickly (hold ⌘ to see the numbers) |
 | Space / ⌘Y | Preview in a popup above the card; ← → move it to the next clip (Space works when the search field is empty) |
 | ⌘E | Edit a text clip (⌘S saves, Esc cancels), or mark up an image (also a single copied image file) |
 | ⌥⌘P | Float the selected images on the screen (configurable) |
@@ -215,7 +215,7 @@ Sources/
     ShelfPanel.swift      Non-activating NSPanel and keyboard handling
     ShelfView.swift       Toolbar, pinboard tabs, filters, cards
     CardsRow.swift        Row of cards: selection, clicks, drag, right-click menu
-    ClipCard.swift        Card (pinboard or app colour header), drag provider, colour swatch, pinboard editor
+    ClipCard.swift        Card (content edge to edge, name label, details on hover), drag provider, colour swatch, pinboard editor
     LinkPreviews.swift    Page titles and images for links (LinkPresentation)
     PreviewPopup.swift    Preview popup above the selected card: title, editing, Quick Look
     StackPanel.swift      Floating paste stack list

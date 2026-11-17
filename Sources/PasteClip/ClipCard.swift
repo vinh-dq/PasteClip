@@ -3,8 +3,10 @@ import PasteClipCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// One clip in the shelf. `Equatable` so SwiftUI skips redrawing it unless what it shows
-/// changed; the selection ring is drawn by `CardsRow` on top.
+/// One clip in the shelf: its content edge to edge, a small label with its name (or, without
+/// one, when it was copied) at the top, and its details at the bottom while the pointer is over
+/// it. `Equatable` so SwiftUI skips redrawing it unless what it shows changed; the selection
+/// ring and quick-paste number are drawn by `CardsRow` on top.
 struct ClipCard: View, Equatable {
     let item: ClipItem
     let store: ClipStore
@@ -12,19 +14,20 @@ struct ClipCard: View, Equatable {
     let board: Pinboard?
     let inStack: Bool
     let showLinkPreview: Bool
-    let quickPasteSymbol: String
     var renaming = false
     var onEndRenaming: () -> Void = {}
     @ObservedObject var links = LinkPreviews.shared
     @ObservedObject var thumbnails = FileThumbnails.shared
+    @StateObject private var hovering = ViewState(false)
 
-    private static let size = CGSize(width: 236, height: 236)
-    static let headerHeight: CGFloat = 50
+    static let size = CGSize(width: 220, height: 236)
+    static let cornerRadius: CGFloat = 20
+    /// Double-clicking above this renames the clip, where its label is.
+    static let labelHeight: CGFloat = 38
 
     static func == (a: ClipCard, b: ClipCard) -> Bool {
-        a.shown == b.shown && a.shortcutIndex == b.shortcutIndex && a.board == b.board && a.inStack == b.inStack
-            && a.showLinkPreview == b.showLinkPreview && a.quickPasteSymbol == b.quickPasteSymbol
-            && a.renaming == b.renaming
+        a.shown == b.shown && a.index == b.index && a.board == b.board && a.inStack == b.inStack
+            && a.showLinkPreview == b.showLinkPreview && a.renaming == b.renaming
     }
 
     /// The clip without its place on the pinboard, which the card doesn't show; reordering a
@@ -35,23 +38,34 @@ struct ClipCard: View, Equatable {
         return item
     }
 
-    /// Only the first nine cards show their position, as a quick-paste shortcut.
-    private var shortcutIndex: Int { min(index, 9) }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
+        ZStack(alignment: .topLeading) {
             content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            footer
+                .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+                .clipped()
+                // Clipping hides what spills over (a wide picture's blurred backdrop) but it would
+                // still take the pointer and clicks over the cards beside it.
+                .allowsHitTesting(false)
+            label.padding(9)
+            kindMark
+                .frame(maxWidth: .infinity, alignment: .topTrailing)
+                .padding(.top, 13)
+                .padding(.trailing, 12)
+            details
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .opacity(hovering.value && !renaming ? 1 : 0)
+                .offset(y: hovering.value ? 0 : 4)
         }
         .frame(width: Self.size.width, height: Self.size.height)
-        // Slightly see-through so the shelf's glass shows behind the card.
         .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5))
         // Flatten the card first so the shadow is drawn once, not for every layer inside it.
         .flattened(!renaming)
-        .shadow(color: .black.opacity(0.14), radius: 5, y: 3)
+        .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
+        .onHover { inside in withAnimation(.easeOut(duration: 0.18)) { hovering.value = inside } }
         .onAppear {
             if showLinkPreview, item.kind == .link, let link = item.text { links.load(link) }
             if item.kind == .file, let path = item.filePaths?.first { thumbnails.load(path) }
@@ -59,7 +73,7 @@ struct ClipCard: View, Equatable {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Label
 
     /// "Image" for a single copied image file, otherwise the clip kind.
     private var kindLabel: String {
@@ -70,59 +84,68 @@ struct ClipCard: View, Equatable {
         return item.kind.label
     }
 
-    /// The pinboard's colour for clips on a pinboard, otherwise the source app's colour.
-    private var tint: Color {
-        board?.color ?? AppTint.color(for: item)
-    }
+    private var symbol: String { item.isImage ? ClipKind.image.symbol : item.kind.symbol }
 
-    private var header: some View {
-        let tint = self.tint
-        return HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    if renaming {
-                        TitleField(item: item, store: store, placeholder: kindLabel, onEnd: onEndRenaming)
-                    } else {
-                        Text(item.title ?? kindLabel)
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-                    }
-                    if item.pinned { Image(systemName: "pin.fill").font(.system(size: 9)) }
-                    if inStack { Image(systemName: "square.stack.3d.up.fill").font(.system(size: 9)) }
-                }
+    /// The app it came from and its name, or, without one, when it was copied. Pinned clips,
+    /// clips in the paste stack and pinboard clips (in History) say so too.
+    private var label: some View {
+        HStack(spacing: 5) {
+            appIcon
+            if let board { Circle().fill(board.color).frame(width: 7, height: 7) }
+            if renaming {
+                TitleField(item: item, store: store, placeholder: "Name this clip", onEnd: onEndRenaming)
+            } else if let title = item.title {
+                Text(title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            } else {
                 Text(item.date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
-                    .font(.system(size: 10.5))
-                    .opacity(0.85)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer(minLength: 4)
-            appBadge
+            if item.pinned { Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.secondary) }
+            if inStack { Image(systemName: "square.stack.3d.up.fill").font(.system(size: 8.5)).foregroundStyle(.secondary) }
         }
-        .foregroundStyle(.white)
-        .padding(.leading, 12)
-        .padding(.trailing, 8)
-        .frame(height: Self.headerHeight)
-        .background(
-            ZStack {
-                LinearGradient(colors: [tint, tint.deeper],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                // Faint sheen along the top edge.
-                LinearGradient(colors: [.white.opacity(0.1), .white.opacity(0)], startPoint: .top, endPoint: .center)
-            }
-        )
+        .padding(.leading, 3)
+        .padding(.trailing, 9)
+        .frame(height: 22)
+        .background(Capsule().fill(Color(nsColor: .windowBackgroundColor).opacity(renaming ? 1 : 0.86)))
+        .overlay(Capsule().strokeBorder(renaming ? Color.accentColor : Color.primary.opacity(0.06), lineWidth: renaming ? 1.5 : 0.5))
+        .shadow(color: .black.opacity(0.08), radius: 1.5, y: 0.5)
+        // As wide as what it says, up to clear of the kind mark.
+        .frame(maxWidth: Self.size.width - 50, alignment: .leading)
     }
 
     @ViewBuilder
-    private var appBadge: some View {
+    private var appIcon: some View {
         if let icon = AppTint.icon(for: item) {
-            Image(nsImage: icon)
-                .resizable()
-                .frame(width: 30, height: 30)
-                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+            Image(nsImage: icon).resizable().frame(width: 16, height: 16)
         } else {
-            Image(systemName: item.kind.symbol)
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(.white.opacity(0.2)))
+            Image(systemName: symbol)
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(AppTint.color(for: item)))
+        }
+    }
+
+    /// The kind of clip, faintly, in the top corner.
+    private var kindMark: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(onPicture ? Color.white.opacity(0.85) : Color.secondary.opacity(0.7))
+            .shadow(color: onPicture ? .black.opacity(0.3) : .clear, radius: 2)
+            .help(kindLabel)
+    }
+
+    /// The card shows a picture or a colour under its label and details.
+    private var onPicture: Bool {
+        switch item.kind {
+        case .image, .color: return true
+        case .file: return hasThumbnail
+        default: return false
         }
     }
 
@@ -134,22 +157,26 @@ struct ClipCard: View, Equatable {
         case .text:
             // Only the start is ever visible; laying out a whole long text on each redraw is slow.
             Text(String((item.text ?? "").prefix(600)))
-                .font(.system(size: 12))
-                .lineLimit(9)
-                .padding(12)
+                .font(looksLikeCode ? .system(size: 11.5, design: .monospaced) : .system(size: 13))
+                .lineSpacing(2)
+                .lineLimit(10)
+                .padding(.horizontal, 14)
+                .padding(.top, Self.labelHeight + 4)
+                // Long text fades out near the card's bottom edge instead of stopping mid-line.
+                .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0.78), .init(color: .clear, location: 0.96)],
+                                     startPoint: .top, endPoint: .bottom))
         case .link:
             linkContent
         case .image:
             if let path = store.imageURL(for: item)?.path, let thumb = thumbnails.thumbnail(for: path) {
-                picture(thumb, badge: FileThumbnails.pixelSize(of: path).map { "\(Int($0.width)) × \(Int($0.height))" })
+                picture(thumb)
             } else {
-                Checkerboard()
+                Color.primary.opacity(0.04)
             }
         case .file:
             if let path = item.filePaths?.first, let thumb = thumbnails.thumbnail(for: path) {
-                let count = item.filePaths?.count ?? 1
-                picture(thumb, badge: count > 1 ? "\((path as NSString).lastPathComponent) +\(count - 1)"
-                                                 : (path as NSString).lastPathComponent)
+                picture(thumb)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array((item.filePaths ?? []).prefix(4)), id: \.self) { path in
@@ -159,91 +186,127 @@ struct ClipCard: View, Equatable {
                         }
                     }
                 }
-                .padding(12)
+                .padding(.horizontal, 14)
+                .padding(.top, Self.labelHeight + 4)
             }
         case .color:
-            ColorSwatch(hex: item.text ?? "").padding(12)
+            colorContent
         }
     }
 
-    /// An image fitted on a checkerboard, with a small glass label at the bottom.
-    private func picture(_ image: NSImage, badge: String?) -> some View {
-        ZStack(alignment: .bottom) {
-            Checkerboard()
+    /// Text that reads as code: indented lines, or braces and semicolons ending them.
+    private var looksLikeCode: Bool {
+        let lines = (item.text ?? "").prefix(400).split(separator: "\n", omittingEmptySubsequences: true)
+        guard lines.count >= 2 else { return false }
+        let codeish = lines.filter { $0.hasPrefix("    ") || $0.hasPrefix("\t") || $0.hasSuffix("{") || $0.hasSuffix(";") || $0.hasSuffix("}") }
+        return codeish.count * 2 >= lines.count
+    }
+
+    /// The whole picture, as wide as the card, over a blurred copy of itself that fills the rest.
+    private func picture(_ image: NSImage) -> some View {
+        ZStack {
             Image(nsImage: image)
                 .resizable()
+                .scaledToFill()
+                .frame(width: Self.size.width, height: Self.size.height)
+                .blur(radius: 22)
+                .saturation(1.3)
+                .opacity(0.85)
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
                 .scaledToFit()
-                .padding(8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if let badge {
-                Text(badge)
-                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.black.opacity(0.5)))
-                    .padding(.horizontal, 30)
-                    .padding(.bottom, 6)
-            }
+                .frame(width: Self.size.width, height: Self.size.height)
         }
-        .frame(width: Self.size.width)
+        .frame(width: Self.size.width, height: Self.size.height)
+        .clipped()
     }
 
     @ViewBuilder
     private var linkContent: some View {
         let preview = showLinkPreview ? links.preview(for: item.text ?? "") : nil
+        let host = URL(string: item.text ?? "")?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
         VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                Color.primary.opacity(0.05)
-                if let image = preview?.image {
-                    // Fitted, not filled, so the whole image shows (as image clips do).
-                    Image(nsImage: image).resizable().scaledToFit().padding(6)
-                } else {
-                    Image(systemName: "safari").font(.system(size: 34, weight: .light)).foregroundStyle(.tertiary)
+            if let image = preview?.image {
+                ZStack {
+                    Image(nsImage: image).resizable().scaledToFill().blur(radius: 18).opacity(0.8)
+                    Image(nsImage: image).resizable().scaledToFit()
                 }
+                .frame(width: Self.size.width, height: 120)
+                .clipped()
             }
-            .frame(width: Self.size.width, height: 104)
-            .clipped()
-            VStack(alignment: .leading, spacing: 3) {
-                if let title = preview?.title {
-                    Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(2)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(host).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(item.text ?? "")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.accentColor)
-                    .lineLimit(preview?.title == nil ? 3 : 1)
+                Text(preview?.title ?? item.text ?? "")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(preview?.image == nil ? 5 : 3)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
+            .padding(.horizontal, 14)
+            .padding(.top, preview?.image == nil ? Self.labelHeight + 4 : 10)
         }
     }
 
-    // MARK: - Footer
+    /// The colour filling the card, with its code on it.
+    private var colorContent: some View {
+        let rgba = RGBA(hex: item.text ?? "")
+        let color = rgba.map { Color(.sRGB, red: $0.r, green: $0.g, blue: $0.b, opacity: $0.a) } ?? .clear
+        let light = rgba.map { 0.299 * $0.r + 0.587 * $0.g + 0.114 * $0.b > 0.6 } ?? false
+        return ZStack(alignment: .bottomLeading) {
+            color
+            Text((item.text ?? "").uppercased())
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .foregroundStyle(light ? Color.black.opacity(0.75) : Color.white)
+                .padding(14)
+                .padding(.bottom, 18)
+        }
+    }
+
+    // MARK: - Details
 
     private var hasThumbnail: Bool {
         item.filePaths?.first.flatMap(thumbnails.thumbnail(for:)) != nil
     }
 
-    private var footer: some View {
-        HStack(spacing: 4) {
-            if item.hasFormatting {
-                Image(systemName: "textformat").help("Keeps formatting")
-            }
-            if item.kind != .image, !(item.kind == .file && hasThumbnail) { Text(item.summary).lineLimit(1) }
-            Spacer()
-            if index < 9 {
-                Text("\(quickPasteSymbol)\(index + 1)")
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.07)))
+    /// Size, length or file name, and when it was copied if the label shows a name instead.
+    private var detail: String? {
+        switch item.kind {
+        case .image:
+            return store.imageURL(for: item).flatMap { FileThumbnails.pixelSize(of: $0.path) }
+                .map { "\(Int($0.width)) × \(Int($0.height))" }
+        case .file:
+            guard let path = item.filePaths?.first else { return nil }
+            let count = item.filePaths?.count ?? 1
+            let name = (path as NSString).lastPathComponent
+            return count > 1 ? "\(name) +\(count - 1)" : name
+        default:
+            return item.summary
+        }
+    }
+
+    private var details: some View {
+        HStack(spacing: 6) {
+            if item.hasFormatting { Image(systemName: "textformat").help("Keeps formatting") }
+            if let detail { Text(detail).lineLimit(1).truncationMode(.middle) }
+            Spacer(minLength: 4)
+            if item.title != nil {
+                Text(item.date, format: .relative(presentation: .named, unitsStyle: .abbreviated)).lineLimit(1)
             }
         }
-        .font(.system(size: 10.5))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+        .foregroundStyle(onPicture ? Color.white : Color.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background {
+            if onPicture {
+                LinearGradient(colors: [.black.opacity(0), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+            } else {
+                LinearGradient(colors: [Color(nsColor: .textBackgroundColor).opacity(0), Color(nsColor: .textBackgroundColor)],
+                               startPoint: .top, endPoint: .center)
+            }
+        }
     }
 }
 
@@ -256,8 +319,8 @@ private extension View {
     }
 }
 
-/// Edits a clip's title in its card header. Return or clicking elsewhere saves; Esc cancels;
-/// an empty title goes back to the clip kind.
+/// Edits a clip's name in its card's label. Return or clicking elsewhere saves; Esc cancels;
+/// an empty name takes it off.
 private struct TitleField: View {
     let item: ClipItem
     let store: ClipStore
@@ -278,10 +341,8 @@ private struct TitleField: View {
     var body: some View {
         TextField(placeholder, text: $draft.value)
             .textFieldStyle(.plain)
-            .font(.system(size: 13, weight: .semibold))
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 5).fill(.white.opacity(0.22)))
+            .font(.system(size: 11.5, weight: .semibold))
+            .frame(width: 140)
             .focused($focused)
             .onAppear { DispatchQueue.main.async { focused = true } }
             .onSubmit { finish(save: true) }
