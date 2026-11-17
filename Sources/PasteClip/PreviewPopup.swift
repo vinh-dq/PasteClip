@@ -86,6 +86,13 @@ final class PreviewPopupController {
         let bounds = screen.visibleFrame
         let full = NSSize(width: min(980, bounds.width - 40), height: min(430, bounds.height * 0.55))
         if item.kind == .text { return textSize(for: item, max: full) }
+        // A colour needs only room for its swatch and code.
+        if item.kind == .color { return NSSize(width: Self.minWidth, height: 250) }
+        if item.kind == .link {
+            // Just the site, the title and the link, with the page's picture beside them when it has one.
+            let picture = LinkPreviews.shared.preview(for: item.text ?? "")?.image.map(PreviewCard.isSharp) ?? false
+            return NSSize(width: min(picture ? 680 : 560, full.width), height: picture ? 300 : 230)
+        }
         guard let pixels = imagePixelSize(of: item), pixels.width > 0, pixels.height > 0 else { return full }
         let points = CGSize(width: pixels.width / screen.backingScaleFactor,
                             height: pixels.height / screen.backingScaleFactor)
@@ -448,25 +455,60 @@ private struct PreviewCard: View {
         }
     }
 
+    /// The site's icon and name, the page's title and the link, with the page's picture beside
+    /// them when it's sharp enough, as on the card.
     @ViewBuilder
     private var linkContent: some View {
         let preview = LinkPreviews.shared.preview(for: item.text ?? "")
+        let host = URL(string: item.text ?? "")?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
+        let picture = preview?.image.flatMap { Self.isSharp($0) ? $0 : nil }
         HStack(alignment: .top, spacing: 18) {
-            if let image = preview?.image {
-                Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: 360, maxHeight: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                if let title = preview?.title {
-                    Text(title).font(.system(size: 17, weight: .semibold)).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.06))
+                        if let icon = preview?.icon {
+                            Image(nsImage: icon).resizable().interpolation(.high).scaledToFit().padding(4)
+                        } else {
+                            Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 28, height: 28)
+                    Text(host).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(item.text ?? "").font(.system(size: 13)).foregroundStyle(Color.accentColor)
+                if let title = preview?.title {
+                    Text(title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+                Text(item.text ?? "")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(preview?.title == nil ? 4 : 2)
+                    .truncationMode(.middle)
                     .textSelection(.enabled)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let picture {
+                Image(nsImage: picture)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 220, height: 150)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+            }
         }
         .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// A page picture shows only when it has the pixels for it; small ones (often the site's
+    /// logo blown up) look blurred.
+    static func isSharp(_ image: NSImage) -> Bool {
+        let pixels = image.representations.map { CGFloat($0.pixelsWide) }.max() ?? image.size.width
+        return pixels >= 400
     }
 
     private static let richCache = NSCache<NSString, NSAttributedString>()

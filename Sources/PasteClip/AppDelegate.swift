@@ -65,10 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         store.start()
-        // Text in images reads at once the first time too, instead of after most of a minute.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [languages = settings.textLanguages] in
-            TextRecognizer.warmUp(languages: languages)
-        }
         // Moves keys left in a plain file by earlier builds into the keychain, without reading it otherwise.
         _ = apiKeys
         setupStatusItem()

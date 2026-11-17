@@ -130,9 +130,6 @@ final class FloatingImages {
                     image = done
                 } else {
                     (image, problem) = try await self.translator.translate(window.original, reading: reading, to: target)
-                    if reading.incomplete {
-                        problem = problem ?? "only Latin text was read; macOS text recognition isn't working (a restart fixes it)"
-                    }
                     // Kept only when all of it went, so a language that failed is tried again next time.
                     if problem == nil { window.translations[target] = image }
                 }

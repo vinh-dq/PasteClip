@@ -10,8 +10,6 @@ final class ImageTranslator {
         let blocks: [TextBlock]
         /// The language of each block, one of those text is read in; nil for one without letters.
         let languages: [String?]
-        /// macOS's text recognition wasn't working, so only Latin writing was read, if any.
-        var incomplete = false
     }
 
     struct Failure: LocalizedError {
@@ -36,8 +34,7 @@ final class ImageTranslator {
             let small = max(image.width, image.height) < 1200
             let lines = TextRecognizer.lines(in: small ? TextRecognizer.upscaled(image, by: 2) : image, languages: languages)
             let blocks = ImageTranslation.blocks(from: lines, size: CGSize(width: image.width, height: image.height))
-            return Reading(blocks: blocks, languages: blocks.map { ImageTranslation.language(of: $0.text, allowed: languages) },
-                           incomplete: TextRecognizer.isFailing)
+            return Reading(blocks: blocks, languages: blocks.map { ImageTranslation.language(of: $0.text, allowed: languages) })
         }.value
         guard !reading.blocks.isEmpty else { throw Failure(message: TextRecognizer.nothingFoundMessage) }
         return reading

@@ -222,31 +222,58 @@ struct ClipCard: View, Equatable {
         .clipped()
     }
 
+    /// The site's icon and name, the page's title, and its picture small at the bottom when
+    /// it's sharp enough to be worth showing.
     @ViewBuilder
     private var linkContent: some View {
         let preview = showLinkPreview ? links.preview(for: item.text ?? "") : nil
         let host = URL(string: item.text ?? "")?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
-        VStack(alignment: .leading, spacing: 0) {
-            if let image = preview?.image {
-                ZStack {
-                    Image(nsImage: image).resizable().scaledToFill().blur(radius: 18).opacity(0.8)
-                    Image(nsImage: image).resizable().scaledToFit()
-                }
-                .frame(width: Self.size.width, height: 120)
-                .clipped()
+        let picture = preview?.image.flatMap { Self.isSharp($0) ? $0 : nil }
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                siteIcon(preview?.icon)
+                Text(host).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text(host).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Text(preview?.title ?? item.text ?? "")
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(preview?.image == nil ? 5 : 3)
+            Text(preview?.title ?? item.text ?? "")
+                .font(.system(size: 13.5, weight: .semibold))
+                .lineSpacing(1)
+                .lineLimit(picture == nil ? 6 : 3)
+            Spacer(minLength: 0)
+            if let picture {
+                Image(nsImage: picture)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: Self.size.width - 24, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
             }
-            .padding(.horizontal, 14)
-            .padding(.top, preview?.image == nil ? Self.labelHeight + 4 : 10)
         }
+        .padding(.horizontal, 12)
+        .padding(.top, Self.labelHeight + 4)
+        .padding(.bottom, 12)
+        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+    }
+
+    /// The site's icon on a small rounded tile, or a globe without one.
+    private func siteIcon(_ icon: NSImage?) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.06))
+            if let icon {
+                Image(nsImage: icon).resizable().interpolation(.high).scaledToFit().padding(4)
+            } else {
+                Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+    }
+
+    /// A page picture shows on the card only when it has the pixels for it; small ones (often
+    /// the site's logo blown up) look blurred.
+    private static func isSharp(_ image: NSImage) -> Bool {
+        let pixels = image.representations.map { CGFloat($0.pixelsWide) }.max() ?? image.size.width
+        return pixels >= 400
     }
 
     /// The colour filling the card, with its code on it.

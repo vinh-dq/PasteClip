@@ -37,19 +37,43 @@ public enum TextRecognizer {
         }
     }
 
-    /// Runs Vision once on a blank image in the background. The first run after each install takes
-    /// most of a minute while macOS prepares Vision's models for the app; this keeps that wait away
-    /// from the first time text is read. Later runs take a moment.
+    /// Reads a small image of text in the background, so the models for `languages` are ready
+    /// before text is first read for real: the first run after each install takes most of a
+    /// minute while macOS prepares them for the app. Later runs take a moment.
     public static func prepare(languages: [String]) {
         DispatchQueue.global(qos: .utility).async {
-            guard let context = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
-                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
-            else { return }
-            context.setFillColor(gray: 1, alpha: 1)
-            context.fill(CGRect(x: 0, y: 0, width: 64, height: 32))
-            if let image = context.makeImage() { _ = recognize(image, languages: languages) }
+            prepareLock.withLock {
+                guard let image = sampleImage() else { return }
+                _ = lines(in: image, languages: languages)
+            }
         }
     }
+
+    /// One preparation at a time: two preparing the same models at once can leave them broken.
+    private static let prepareLock = NSLock()
+
+    /// A line of Latin, Japanese, Chinese and Korean text, so each writing system's model loads.
+    private static func sampleImage() -> CGImage? {
+        let width = 900, height = 80
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 36, nil)
+        let text = NSAttributedString(string: "Hello world こんにちは 你好 안녕하세요",
+                                      attributes: [kCTFontAttributeName as NSAttributedString.Key: font,
+                                                   kCTForegroundColorAttributeName as NSAttributedString.Key: CGColor(gray: 0, alpha: 1)])
+        context.textPosition = CGPoint(x: 16, y: 26)
+        CTLineDraw(CTLineCreateWithAttributedString(text), context)
+        return context.makeImage()
+    }
+
+    /// Reads an image in a process of its own, for when reading here fails: once macOS's text
+    /// recognition breaks in a process (an "e5rt" error from the Neural Engine runtime), it stays
+    /// broken there until the process ends, while a new one reads fine. The app sets it; nil, as
+    /// in that other process, reading just fails.
+    nonisolated(unsafe) public static var readElsewhere: ((CGImage, [String]) -> [Line]?)?
 
     /// The text in `image`, or nil if there is none. Blocks while Vision runs, so call it off the main thread.
     public static func recognize(_ image: CGImage, languages: [String], keepLineBreaks: Bool = true) -> String? {
@@ -59,6 +83,12 @@ public enum TextRecognizer {
 
     /// Every line of text in `image` and where it is. Blocks while Vision runs, so call it off the main thread.
     public static func lines(in image: CGImage, languages: [String]) -> [Line] {
+        // A menu bar app with no window open gets napped by macOS. Preparing the models (most of
+        // a minute the first time) then ran so slowly it failed, and kept failing until PasteClip
+        // was restarted; holding off naps while reading keeps it at full speed.
+        let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
+                                                             reason: "Reading text in an image")
+        defer { ProcessInfo.processInfo.endActivity(activity) }
         let supported = Set(supportedLanguages)
         var groups: [[String]] = []
         for language in languages where supported.contains(language) {
@@ -79,11 +109,7 @@ public enum TextRecognizer {
             do {
                 observations = try perform(.accurate, languages: groups[i], on: image)
             } catch {
-                // macOS's accurate model can stop working (an "e5rt" error from the Neural
-                // Engine runtime, until a restart). The fast one still reads Latin writing,
-                // without Vietnamese accents; nothing reads Chinese or Japanese then.
                 lock.withLock { failed = true }
-                if script == .latin { observations = try? perform(.fast, languages: ["en-US"], on: image) }
             }
             let lines = (observations ?? []).compactMap { observation -> Line? in
                 guard let text = observation.topCandidates(1).first?.string else { return nil }
@@ -91,8 +117,15 @@ public enum TextRecognizer {
             }
             lock.withLock { passes[i] = lines }
         }
+        // Part of the text unread would be translated as if it were all of it: read it elsewhere,
+        // or not at all. (macOS's fast model still reads Latin writing then, but badly, and
+        // nothing else, so it isn't used.)
+        if failed, let read = readElsewhere?(image, languages) {
+            failureLock.withLock { lastRunFailed = false }
+            return read
+        }
         failureLock.withLock { lastRunFailed = failed }
-        return merge(passes)
+        return failed ? [] : merge(passes)
     }
 
     private static func perform(_ level: VNRequestTextRecognitionLevel, languages: [String],
@@ -116,32 +149,12 @@ public enum TextRecognizer {
 
     /// What to say when no text came back: there was none, or recognition isn't working.
     public static var nothingFoundMessage: String {
-        isFailing ? "macOS text recognition isn't working right now. Restarting the Mac usually fixes it."
+        isFailing ? "Couldn't read the text: macOS text recognition isn't working right now. Restarting PasteClip usually fixes it."
             : "No text found in the image"
     }
 
     /// `image` drawn `factor` times larger, unless that would be more than 24 megapixels.
     /// Text from a screen that isn't Retina reads better at twice the size.
-    /// Reads a small image of text, so the models for `languages` are loaded before text is
-    /// first read for real: after each update of the app macOS prepares them again, which takes
-    /// most of a minute. Slow; call it off the main thread.
-    public static func warmUp(languages: [String]) {
-        let width = 900, height = 80
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
-        context.setFillColor(CGColor(gray: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let font = CTFontCreateWithName("Helvetica" as CFString, 36, nil)
-        let text = NSAttributedString(string: "Hello world こんにちは 你好 안녕하세요",
-                                      attributes: [kCTFontAttributeName as NSAttributedString.Key: font,
-                                                   kCTForegroundColorAttributeName as NSAttributedString.Key: CGColor(gray: 0, alpha: 1)])
-        context.textPosition = CGPoint(x: 16, y: 26)
-        CTLineDraw(CTLineCreateWithAttributedString(text), context)
-        guard let image = context.makeImage() else { return }
-        _ = lines(in: image, languages: languages)
-    }
-
     public static func upscaled(_ image: CGImage, by factor: Int) -> CGImage {
         let width = image.width * factor, height = image.height * factor
         guard factor > 1, width * height <= 24_000_000,
@@ -156,7 +169,7 @@ public enum TextRecognizer {
     // MARK: - Merging passes
 
     /// A line of text and where it is, in Vision's coordinates (0…1, origin at the bottom left).
-    public struct Line: Equatable {
+    public struct Line: Equatable, Codable {
         public var text: String
         public var box: CGRect
         var script: Script
@@ -166,7 +179,7 @@ public enum TextRecognizer {
     }
 
     /// The writing systems Vision reads with separate models.
-    enum Script: Hashable {
+    enum Script: String, Hashable, Codable {
         case latin, hanAndKana, hangul, cyrillic, thai, arabic, devanagari
 
         init(of language: String) {

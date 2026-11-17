@@ -104,3 +104,11 @@ private func line(_ text: String, y: CGFloat, x: CGFloat = 0.1, width: CGFloat =
     settings.textLanguages.append("ko-KR")
     #expect(AppSettings(defaults: defaults).textLanguages.last == "ko-KR")
 }
+
+@Test func linesCrossToAnotherProcessIntact() throws {
+    // Read elsewhere when reading here fails, lines come back as JSON.
+    let lines = [line("特定原材料", y: 0.5, .hanAndKana), line("Allergy", y: 0.3)]
+    let back = try JSONDecoder().decode([Line].self, from: JSONEncoder().encode(lines))
+    #expect(back == lines)
+    #expect(back[0].isHanOrKana && !back[1].isHanOrKana)
+}
