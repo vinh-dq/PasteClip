@@ -154,6 +154,18 @@ private struct GeneralPage: View {
                 Toggle("Sound effects", isOn: $settings.playSounds)
             }
 
+            Section {
+                Picker("After a screenshot", selection: $settings.screenshotAction) {
+                    ForEach(ScreenshotAction.allCases) { Text($0.title).tag($0) }
+                }
+            } header: {
+                Text("Screenshots")
+            } footer: {
+                Text("Capture Screen Area (\(settings.screenshotHotKey?.display ?? "no shortcut")) picks an area, or a window with Space. "
+                     + "The screenshot is saved as a clip and copied.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("When you choose a clip") {
                 PasteModeRow(mode: .frontApp, selection: $settings.pasteMode,
                              title: "Paste into the front app",
@@ -359,6 +371,11 @@ private struct TranslationPage: View {
                 Toggle(isOn: $settings.saveTranslations) {
                     Text("Save translations to history")
                     Text("Translations you copy or paste are added to the clip list, from “Translation”. Turn off to only put them on the clipboard.")
+                }
+                Toggle(isOn: $settings.saveImageTranslations) {
+                    Text("Save translated images to history")
+                    Text("An image translated where its text is (T on a floating image, \(settings.translateScreenHotKey?.display ?? "Translate Screen Area")) "
+                         + "is added to the clip list. Turn off to only show it; editing it saves it then.")
                 }
             } footer: {
                 Text("In a translation, 1–\(min(settings.translationTargets.count, 9)) picks the language, ↑ ↓ the service, Return copies, "
@@ -885,14 +902,22 @@ private struct ShortcutsPage: View {
                 LabeledContent("Start or stop paste stack") { ShortcutField(combo: $settings.stackHotKey, settings: settings) }
                 LabeledContent("Paste next from stack") { ShortcutField(combo: $settings.pasteNextHotKey, settings: settings) }
                 LabeledContent("Copy text from screen") { ShortcutField(combo: $settings.captureTextHotKey, settings: settings) }
+                LabeledContent("Capture screen area") { ShortcutField(combo: $settings.screenshotHotKey, settings: settings) }
+                LabeledContent("Translate screen area") { ShortcutField(combo: $settings.translateScreenHotKey, settings: settings) }
+                LabeledContent("Float latest image") { ShortcutField(combo: $settings.floatImageKey, settings: settings) }
                 LabeledContent("Translate selection or clipboard") { ShortcutField(combo: $settings.translateHotKey, settings: settings) }
             } footer: {
-                Text("These work from any app.").font(.caption).foregroundStyle(.secondary)
+                Text("These work from any app, and come before the app's own shortcuts: ⇧⌘P, for one, is also VS Code's "
+                     + "Command Palette. Change or clear any that get in the way.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
                 LabeledContent("Next pinboard") { ShortcutField(combo: $settings.nextPinboardKey, settings: settings) }
                 LabeledContent("Previous pinboard") { ShortcutField(combo: $settings.previousPinboardKey, settings: settings) }
+                LabeledContent("Translate images where their text is") {
+                    ShortcutField(combo: $settings.translateImageKey, settings: settings)
+                }
                 Picker("Quick paste", selection: $settings.quickPasteModifier) {
                     ForEach([ModifierKey.command, .option, .control]) { Text("\($0.title) + 1…9").tag($0) }
                 }

@@ -27,21 +27,30 @@ final class ScreenTextCapture {
 
     func start() {
         guard !running else { return }
-        guard Self.hasAccess else { return askForAccess() }
+        guard Self.hasAccess else { return Self.askForAccess() }
         running = true
+        Self.pickArea { [weak self] file in
+            guard let file else { self?.running = false; return }
+            self?.recognize(file)
+        }
+    }
+
+    /// Lets the user pick an area or a window with the system's selection, and hands over the
+    /// PNG it was saved to, or nil if the selection was cancelled.
+    static func pickArea(_ done: @escaping (URL?) -> Void) {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("PasteClip-\(UUID().uuidString).png")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         // -i: pick an area or window, -x: no shutter sound, -o: no window shadow.
         process.arguments = ["-i", "-x", "-o", file.path]
-        process.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.recognize(file) }
+        process.terminationHandler = { _ in
+            DispatchQueue.main.async { done(FileManager.default.fileExists(atPath: file.path) ? file : nil) }
         }
         do {
             try process.run()
         } catch {
-            running = false
             NSSound.beep()
+            done(nil)
         }
     }
 
@@ -71,7 +80,7 @@ final class ScreenTextCapture {
         running = false
         toast.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
         guard let text, let item = store.addText(text, source: "Screen Text") else {
-            toast.show("No text found", symbol: "text.viewfinder")
+            toast.show(TextRecognizer.isFailing ? TextRecognizer.nothingFoundMessage : "No text found", symbol: "text.viewfinder")
             return
         }
         store.copyToPasteboard(item)
@@ -83,7 +92,7 @@ final class ScreenTextCapture {
     }
 
     /// The first time, macOS asks by itself; after that, point to System Settings.
-    private func askForAccess() {
+    static func askForAccess() {
         let key = "askedForScreenAccess"
         if !UserDefaults.standard.bool(forKey: key) {
             UserDefaults.standard.set(true, forKey: key)
@@ -93,13 +102,98 @@ final class ScreenTextCapture {
         let alert = NSAlert()
         alert.messageText = "Allow PasteClip to read the screen"
         alert.informativeText = """
-            To copy text from the screen, turn on PasteClip in Privacy & Security → Screen & System Audio Recording, \
+            To copy text from the screen or take screenshots, turn on PasteClip in Privacy & Security → Screen & System Audio Recording, \
             then quit and reopen PasteClip. The screen is only read when you use this shortcut, and never leaves your Mac.
             """
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()
         if alert.runModal() == .alertFirstButtonReturn { Self.openPrivacySettings() }
+    }
+}
+
+/// Takes a screenshot of an area with the system's selection and keeps it as an image clip,
+/// copied to the clipboard.
+final class ScreenshotCapture {
+    private let store: ClipStore
+    private let settings: AppSettings
+    private let toast = Toast()
+    private var running = false
+    /// Called with the new clip once it's saved and copied.
+    var onCaptured: ((ClipItem) -> Void)?
+
+    init(store: ClipStore, settings: AppSettings) {
+        self.store = store
+        self.settings = settings
+    }
+
+    func start() {
+        guard !running else { return }
+        guard ScreenTextCapture.hasAccess else { return ScreenTextCapture.askForAccess() }
+        running = true
+        ScreenTextCapture.pickArea { [weak self] file in
+            guard let self else { return }
+            self.running = false
+            guard let file else { return }
+            let png = try? Data(contentsOf: file)
+            try? FileManager.default.removeItem(at: file)
+            guard let png, let item = self.store.addImage(png, source: "Screenshot") else { return NSSound.beep() }
+            self.store.copyToPasteboard(item)
+            if self.settings.screenshotAction == .copy {
+                self.toast.sharingType = self.settings.hideDuringScreenSharing ? .none : .readOnly
+                self.toast.show("Screenshot copied", symbol: "checkmark.circle.fill")
+            }
+            self.onCaptured?(item)
+        }
+    }
+}
+
+/// Translates an area of the screen. The area is picked with the system's selection, and its
+/// translation is put over that very spot, found from where the drag began and ended.
+final class ScreenTranslation {
+    private var running = false
+    private var mouseMonitor: Any?
+    private var down: NSPoint?
+    private var up: NSPoint?
+    /// Called with the screenshot and where on screen it was taken, when that's known (not for a
+    /// window picked with Space).
+    var onCaptured: ((CGImage, NSRect?) -> Void)?
+
+    func start() {
+        guard !running else { return }
+        guard ScreenTextCapture.hasAccess else { return ScreenTextCapture.askForAccess() }
+        running = true
+        down = nil
+        up = nil
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+            if event.type == .leftMouseDown { self?.down = NSEvent.mouseLocation } else { self?.up = NSEvent.mouseLocation }
+        }
+        ScreenTextCapture.pickArea { [weak self] file in
+            guard let self else { return }
+            self.running = false
+            if let mouseMonitor = self.mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+            self.mouseMonitor = nil
+            guard let file else { return }
+            // Read into memory before the file goes: an image from a file source is only decoded
+            // when it's drawn, which would find the file gone and draw nothing.
+            let data = try? Data(contentsOf: file)
+            try? FileManager.default.removeItem(at: file)
+            let image = data.flatMap { CGImageSourceCreateWithData($0 as CFData, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) }
+                .flatMap { CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) }
+            guard let image else { return }
+            self.onCaptured?(image, self.placement(of: image))
+        }
+    }
+
+    /// The area dragged, if the screenshot is that size; a window picked with Space isn't.
+    private func placement(of image: CGImage) -> NSRect? {
+        guard let down, let up else { return nil }
+        let rect = NSRect(x: min(down.x, up.x), y: min(down.y, up.y), width: abs(up.x - down.x), height: abs(up.y - down.y))
+        let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: rect.midX, y: rect.midY)) } ?? NSScreen.main
+        let scale = screen?.backingScaleFactor ?? 2
+        let size = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        guard abs(rect.width - size.width) <= 3, abs(rect.height - size.height) <= 3 else { return nil }
+        return NSRect(origin: rect.origin, size: size)
     }
 }
 

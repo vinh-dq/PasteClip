@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 public enum ClipKind: String, Codable, CaseIterable {
     case text, link, image, file, color
@@ -78,6 +79,18 @@ public struct ClipItem: Identifiable, Codable, Equatable {
     public var isTextual: Bool { kind == .text || kind == .link || kind == .color }
 
     public var hasFormatting: Bool { richFile != nil || pasteboardFile != nil }
+
+    /// A single image file copied in Finder or by a screenshot app, which can be marked up and
+    /// floated like an image clip.
+    public var copiedImagePath: String? {
+        guard kind == .file, let paths = filePaths, paths.count == 1, let path = paths.first,
+              let type = UTType(filenameExtension: (path as NSString).pathExtension), type.conforms(to: .image)
+        else { return nil }
+        return path
+    }
+
+    /// An image clip, or a copied image file.
+    public var isImage: Bool { kind == .image || copiedImagePath != nil }
 
     /// What makes two clips "the same" for de-duplication.
     public var contentKey: String {

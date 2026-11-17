@@ -1,0 +1,946 @@
+import AppKit
+import Combine
+import PasteClipCore
+import PasteClipSystem
+import SwiftUI
+
+/// Images floated above every window, for keeping something in view while you work. Scrolling
+/// over one makes it clearer or fainter; pinching or ⌘-scrolling zooms; T shows it translated.
+/// They aren't kept when PasteClip quits.
+final class FloatingImages {
+    private let store: ClipStore
+    private let settings: AppSettings
+    private let translator: ImageTranslator
+    private var windows: [FloatingImageWindow] = []
+    /// Watches the pointer while an image is locked, which gets no mouse events then, so its
+    /// strip still shows (with the button that unlocks it) when the pointer is over it.
+    private var lockTimer: Timer?
+    /// macOS sends a pinch to the app in front, not to the window under the pointer, so a
+    /// floating image (PasteClip stays in the background) never gets it. This tap sees every
+    /// pinch while images float, zooms the one under the pointer, and keeps the pinch from the
+    /// app behind. Without Accessibility permission it can only watch, not keep it.
+    private var pinchTap: CFMachPort?
+    private var pinchSource: CFRunLoopSource?
+    var onEdit: (ClipItem) -> Void = { _ in }
+
+    init(store: ClipStore, settings: AppSettings, keys: APIKeys) {
+        self.store = store
+        self.settings = settings
+        translator = ImageTranslator(settings: settings, keys: keys)
+    }
+
+    var count: Int { windows.count }
+    var hasLocked: Bool { windows.contains { $0.state.locked } }
+
+    /// Floats an image clip, translated straight away if `translate` (into `target`, or the
+    /// first language in Settings it isn't in).
+    func show(_ item: ClipItem, translate: Bool = false, target: String? = nil) {
+        guard let url = store.pictureURL(for: item), let image = item.kind == .image ? store.image(for: item) : NSImage(contentsOf: url),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return NSSound.beep() }
+        let window = open(cgImage, item: item, placement: nil)
+        if translate { self.translate(window, to: target) }
+    }
+
+    /// Floats a screenshot of an area exactly over that area (`placement`, on screen), and
+    /// translates it, so the translation reads in place of the text there.
+    func showTranslated(_ image: CGImage, over placement: NSRect?) {
+        translate(open(image, item: nil, placement: placement), to: nil)
+    }
+
+    private func open(_ image: CGImage, item: ClipItem?, placement: NSRect?) -> FloatingImageWindow {
+        let window = FloatingImageWindow(item: item, image: image, cascade: windows.count, placement: placement)
+        window.panel.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
+        window.onClose = { [weak self, weak window] in
+            self?.windows.removeAll { $0 === window }
+            self?.watchPinches()
+        }
+        window.onEdit = { [weak self, weak window] in
+            guard let self, let window else { return }
+            // What's on screen: the translation, kept as a clip, or the image floated.
+            if let clip = window.shownClip.flatMap({ self.store.item(withID: $0.id) }) { return self.onEdit(clip) }
+            // A translation not saved (Settings) is saved now: the editor works on clips.
+            if window.state.showsTranslation, let image = window.translated, let target = window.state.language,
+               let clip = self.save(image, of: window, in: target) {
+                window.translatedClip = clip
+                return self.onEdit(clip)
+            }
+            NSSound.beep()
+        }
+        window.onCopy = { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.copy(window.shownClip, image: window.shownImage)
+        }
+        window.onTranslate = { [weak self, weak window] target in
+            guard let self, let window else { return }
+            self.translate(window, to: target)
+        }
+        window.onGoogle = { [weak self, weak window] target in
+            guard let self, let window else { return }
+            self.openInGoogleTranslate(window, into: target)
+        }
+        window.onLockChange = { [weak self] in self?.watchLocks() }
+        window.translationTargets = { [settings] in settings.translationTargets }
+        windows.append(window)
+        window.show()
+        watchPinches()
+        return window
+    }
+
+    /// Translates what a floating image shows and saves the translated image as a new clip. A
+    /// clip saved for an earlier language of the same image is replaced, unless it's been kept.
+    /// The text is read once per image, and each language translated once.
+    private func translate(_ window: FloatingImageWindow, to target: String?) {
+        let generation = window.beginTranslating()
+        Task { @MainActor [weak self, weak window] in
+            guard let self, let window else { return }
+            do {
+                let reading: ImageTranslator.Reading
+                if let read = window.reading {
+                    reading = read
+                } else {
+                    reading = try await self.translator.read(window.original)
+                    window.reading = reading
+                }
+                let target = target ?? self.translator.defaultTarget(for: reading)
+                let image: CGImage
+                var problem: String?
+                if let done = window.translations[target] {
+                    image = done
+                } else {
+                    (image, problem) = try await self.translator.translate(window.original, reading: reading, to: target)
+                    if reading.incomplete {
+                        problem = problem ?? "only Latin text was read; macOS text recognition isn't working (a restart fixes it)"
+                    }
+                    // Kept only when all of it went, so a language that failed is tried again next time.
+                    if problem == nil { window.translations[target] = image }
+                }
+                guard window.isCurrent(generation) else { return }
+                // The clip saved for another language is replaced; one saved by editing it, with
+                // saving turned off, was asked for and stays.
+                if self.settings.saveImageTranslations,
+                   let old = window.translatedClip.flatMap({ self.store.item(withID: $0.id) }), !old.isKept {
+                    self.store.delete(old)
+                }
+                let clip = self.settings.saveImageTranslations ? self.save(image, of: window, in: target) : nil
+                window.showTranslation(image, clip: clip, target: target, problem: problem)
+            } catch {
+                guard window.isCurrent(generation) else { return }
+                window.translationFailed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func watchPinches() {
+        if windows.isEmpty {
+            if let pinchTap { CGEvent.tapEnable(tap: pinchTap, enable: false) }
+            if let pinchSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), pinchSource, .commonModes) }
+            pinchTap = nil
+            pinchSource = nil
+            return
+        }
+        guard pinchTap == nil else { return }
+        // Trackpad gestures arrive as CGEvent type 29; AppKit turns pinches among them into .magnify.
+        let gesture = CGEventMask(1) << 29
+        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                          options: Paster.isTrusted ? .defaultTap : .listenOnly,
+                                          eventsOfInterest: gesture, callback: { _, type, event, owner in
+            guard let owner else { return Unmanaged.passUnretained(event) }
+            let images = Unmanaged<FloatingImages>.fromOpaque(owner).takeUnretainedValue()
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = images.pinchTap { CGEvent.tapEnable(tap: tap, enable: true) }
+                return Unmanaged.passUnretained(event)
+            }
+            return images.pinch(event) ? nil : Unmanaged.passUnretained(event)
+        }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
+        let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        pinchTap = tap
+        pinchSource = source
+    }
+
+    /// Zooms the floating image under the pointer for a pinch; false for any other gesture, or
+    /// one that isn't over an image, which then goes on as usual.
+    private func pinch(_ event: CGEvent) -> Bool {
+        guard let ns = NSEvent(cgEvent: event), ns.type == .magnify else { return false }
+        let mouse = NSEvent.mouseLocation
+        guard let window = windows.last(where: { !$0.state.locked && $0.panel.frame.contains(mouse) }) else { return false }
+        window.setZoom(window.state.zoom * (1 + ns.magnification), around: mouse)
+        return true
+    }
+
+    func closeAll() { windows.forEach { $0.close() } }
+
+    func unlockAll() { windows.forEach { $0.setLocked(false) } }
+
+    /// Google Translate's web page translates images well too, but has no API for it. The
+    /// original image goes on the clipboard (not into history), the page's Images tab opens, and
+    /// once the browser is in front and the page has had time to load, ⌘V pastes it there.
+    private func openInGoogleTranslate(_ window: FloatingImageWindow, into target: String) {
+        let code = Translator.code(for: target, in: .google)
+        guard let png = MarkupRenderer.pngData(window.original),
+              let url = URL(string: "https://translate.google.com/?sl=auto&tl=\(code)&op=images") else { return NSSound.beep() }
+        store.copyImageWithoutSaving(png)
+        let browser = NSWorkspace.shared.urlForApplication(toOpen: url).flatMap { Bundle(url: $0)?.bundleIdentifier }
+        NSWorkspace.shared.open(url)
+        guard Paster.isTrusted, let browser else {
+            return window.flash("Copied · press ⌘V on the Google Translate page")
+        }
+        window.flash("Opening Google Translate…")
+        let changeCount = NSPasteboard.general.changeCount
+        let deadline = Date().addingTimeInterval(15)
+        // The page is ready once its title is in: "Google Translate", "Google Dịch"… While it
+        // loads the tab shows its address (all lower case) or nothing. A slow start (the browser
+        // restoring its tabs, a slow network) just waits longer.
+        // The tab in front before the new one opens may be a Google page too, so the title has to
+        // be seen loading first, or else have had a while to change.
+        var sawLoading = false
+        var inFront: Date?
+        func waitForPage() {
+            let front = NSWorkspace.shared.frontmostApplication
+            var ready = false
+            if front?.bundleIdentifier == browser {
+                inFront = inFront ?? Date()
+                let titled = front.flatMap(Paster.focusedWindowTitle(of:))?.contains("Google") == true
+                if !titled { sawLoading = true }
+                ready = titled && (sawLoading || Date().timeIntervalSince(inFront!) > 2.5)
+            }
+            guard ready || Date() >= deadline else {
+                return DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: waitForPage)
+            }
+            // A moment for the page's scripts, which take the paste, to start.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                // Only into the browser, and only the image put there for it.
+                guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == browser,
+                      NSPasteboard.general.changeCount == changeCount else { return }
+                Paster.pasteIntoFrontApp()
+            }
+        }
+        waitForPage()
+    }
+
+    /// Adds a translated image to history, named after the clip it came from and the language.
+    private func save(_ image: CGImage, of window: FloatingImageWindow, in target: String) -> ClipItem? {
+        guard let png = MarkupRenderer.pngData(image) else { return nil }
+        let name = Translator.name(of: target)
+        return store.addImage(png, title: window.item?.title.map { "\($0) · \(name)" } ?? "\(name) translation",
+                              source: "Translation")
+    }
+
+    private func copy(_ item: ClipItem?, image: CGImage) {
+        if let current = item.flatMap({ store.item(withID: $0.id) }) { return store.copyToPasteboard(current) }
+        // The clip was deleted, or there never was one; the image is still on screen.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([NSImage(cgImage: image, size: .zero)])
+    }
+
+    private func watchLocks() {
+        guard hasLocked else {
+            lockTimer?.invalidate()
+            lockTimer = nil
+            return
+        }
+        guard lockTimer == nil else { return }
+        lockTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+            let mouse = NSEvent.mouseLocation
+            for window in self?.windows ?? [] where window.state.locked {
+                let inside = window.panel.frame.contains(mouse)
+                if window.state.hovering != inside { window.state.hovering = inside }
+            }
+        }
+    }
+}
+
+final class FloatingImageState: ObservableObject {
+    @Published var opacity: CGFloat = 1
+    /// Size compared with the image's own size on screen.
+    @Published var zoom: CGFloat = 1
+    /// The pointer is over the image.
+    @Published var hovering = false
+    /// The pointer is over the strip of controls.
+    @Published var stripHovering = false
+    /// Clicks go through to the windows behind.
+    @Published var locked = false
+    /// Shows the opacity and zoom for a moment after they change.
+    @Published var flashing = false
+    @Published var message: String?
+    /// Stays up until it's cleared: "Translating…".
+    @Published var status: String?
+    /// The translation is showing rather than the image as it was.
+    @Published var showsTranslation = false
+    /// The language of the translation, once there is one.
+    @Published var language: String?
+
+    /// The strip shows: while the pointer is over the image or the strip (locked or not), or to say something.
+    var showsStrip: Bool { hovering || stripHovering || flashing || status != nil }
+}
+
+final class FloatingImagePanel: NSPanel {
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isFloatingPanel = true
+        level = .floating
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        animationBehavior = .utilityWindow
+    }
+
+    override var canBecomeKey: Bool { true }
+
+    /// Keys for the image, whichever view has the focus (a clicked button can take it).
+    var onKey: ((NSEvent) -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown || event.type == .keyUp, onKey?(event) == true { return }
+        super.sendEvent(event)
+    }
+}
+
+final class FloatingImageWindow {
+    let panel = FloatingImagePanel()
+    let state = FloatingImageState()
+    /// The clip floated; nil for a screenshot taken to be translated.
+    let item: ClipItem?
+    let original: CGImage
+    private(set) var translated: CGImage?
+    /// The translated image, saved as a clip (unless Settings says not to, until it's edited).
+    var translatedClip: ClipItem?
+    /// Counts translations asked for, so only the latest one shows.
+    private var generation = 0
+    /// The text found in the image, once read.
+    var reading: ImageTranslator.Reading?
+    /// Translations already drawn, by language.
+    var translations: [String: CGImage] = [:]
+    /// The image's size on screen at 100%: its pixels on a Retina display.
+    private let baseSize: CGSize
+    private let content: FloatingImageView
+    private var strip: FloatStripPanel!
+    private var subscriptions = Set<AnyCancellable>()
+    /// Hides the strip a moment after the pointer leaves, so it can cross from image to strip.
+    private var hideStrip: DispatchWorkItem?
+    private var flashTimer: Timer?
+    var onClose: () -> Void = {}
+    var onEdit: () -> Void = {}
+    var onCopy: () -> Void = {}
+    /// Opens Google Translate's Images page for the original image, into a language.
+    var onGoogle: (String) -> Void = { _ in }
+    /// Asks for a translation into a language, or the first one the text isn't in.
+    var onTranslate: (String?) -> Void = { _ in }
+    var onLockChange: () -> Void = {}
+    /// The languages to translate into, in the order of Settings.
+    var translationTargets: () -> [String] = { [] }
+
+    /// `placement` puts it exactly there (on screen) instead of by the pointer.
+    init(item: ClipItem?, image: CGImage, cascade: Int, placement: NSRect? = nil) {
+        self.item = item
+        original = image
+        let point = placement.map { NSPoint(x: $0.midX, y: $0.midY) } ?? NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main!
+        let scale = screen.backingScaleFactor
+        baseSize = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        // Over its own spot on screen, square corners line up with what's around it.
+        content = FloatingImageView(image: image, state: state, cornerRadius: placement == nil ? 10 : 3)
+        content.window_ = self
+        panel.contentView = content
+        panel.onKey = { [weak self] event in self?.handle(event) ?? false }
+        setUpStrip()
+        if let placement {
+            state.zoom = placement.width / baseSize.width
+            panel.setFrame(placement, display: false)
+            return
+        }
+
+        // As large as the image, up to most of the screen, centred on the pointer.
+        let visible = screen.visibleFrame
+        state.zoom = min(1, visible.width * 0.6 / baseSize.width, visible.height * 0.6 / baseSize.height)
+        let size = self.size(at: state.zoom)
+        let mouse = NSEvent.mouseLocation
+        let offset = CGFloat(cascade % 8) * 24
+        var frame = NSRect(x: mouse.x - size.width / 2 + offset, y: mouse.y - size.height / 2 - offset,
+                           width: size.width, height: size.height)
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+        frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        panel.setFrame(frame, display: false)
+    }
+
+    // MARK: Strip
+
+    private func setUpStrip() {
+        let view = FloatStrip(state: state,
+                              close: { [weak self] in self?.close() },
+                              zoom: { [weak self] factor in
+                                  guard let self else { return }
+                                  self.setZoom(self.state.zoom * factor, animate: true)
+                              },
+                              translate: { [weak self] in self?.toggleTranslation() },
+                              google: { [weak self] in self?.openInGoogleTranslate() },
+                              edit: { [weak self] in self?.onEdit() },
+                              copy: { [weak self] in
+                                  self?.onCopy()
+                                  self?.flash("Copied")
+                              },
+                              lock: { [weak self] in
+                                  guard let self else { return }
+                                  self.setLocked(!self.state.locked)
+                              })
+        strip = FloatStripPanel(strip: view)
+        strip.hosting.onHover = { [weak self] inside in self?.state.stripHovering = inside }
+        state.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.updateStrip() }
+            .store(in: &subscriptions)
+        NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
+            .merge(with: NotificationCenter.default.publisher(for: NSWindow.didResizeNotification, object: panel))
+            .sink { [weak self] _ in self?.placeStrip() }
+            .store(in: &subscriptions)
+    }
+
+    /// Under the image, or above it when there's no room below; centred, on screen.
+    private func placeStrip() {
+        let size = strip.hosting.fittingSize
+        let image = panel.frame
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? image
+        let gap: CGFloat = 8
+        var y = image.minY - gap - size.height
+        if y < visible.minY { y = min(image.maxY + gap, visible.maxY - size.height) }
+        // Neither below nor above (an image filling the screen): along its bottom edge, inside.
+        if y + size.height > image.minY, y < image.maxY, image.minY - gap - size.height < visible.minY,
+           image.maxY + gap + size.height > visible.maxY {
+            y = max(image.minY, visible.minY) + gap
+        }
+        let x = min(max(image.midX - size.width / 2, visible.minX + 4), visible.maxX - size.width - 4)
+        strip.setFrame(NSRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height), display: true)
+    }
+
+    private func updateStrip() {
+        let visible = state.showsStrip
+        if visible {
+            hideStrip?.cancel()
+            hideStrip = nil
+            placeStrip()
+            setStrip(visible: true)
+        } else if hideStrip == nil {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.hideStrip = nil
+                if !self.state.showsStrip { self.setStrip(visible: false) }
+            }
+            hideStrip = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        }
+    }
+
+    private func setStrip(visible: Bool) {
+        strip.ignoresMouseEvents = !visible
+        let alpha: CGFloat = visible ? 1 : 0
+        guard strip.alphaValue != alpha else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = visible ? 0.12 : 0.25
+            strip.animator().alphaValue = alpha
+        }
+    }
+
+    func show() {
+        panel.alphaValue = 0
+        strip.sharingType = panel.sharingType
+        panel.addChildWindow(strip, ordered: .above)
+        placeStrip()
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        panel.makeFirstResponder(content)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            panel.animator().alphaValue = 1
+        }
+        flash()
+    }
+
+    func close() {
+        flashTimer?.invalidate()
+        hideStrip?.cancel()
+        subscriptions.removeAll()
+        panel.removeChildWindow(strip)
+        strip.orderOut(nil)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [panel] in
+            panel.orderOut(nil)
+        })
+        onClose()
+        if state.locked { state.locked = false; onLockChange() }
+    }
+
+    // MARK: Size and opacity
+
+    private func size(at zoom: CGFloat) -> CGSize {
+        CGSize(width: (baseSize.width * zoom).rounded(), height: (baseSize.height * zoom).rounded())
+    }
+
+    /// Zooms around `anchor` (a point on screen), which stays where it is; the middle if nil.
+    func setZoom(_ zoom: CGFloat, around anchor: NSPoint? = nil, animate: Bool = false) {
+        // Never smaller than 48 points on its shorter side, nor larger than 8 times.
+        let smallest = 48 / min(baseSize.width, baseSize.height)
+        let zoom = min(max(zoom, min(smallest, 1)), 8)
+        guard zoom != state.zoom else { return }
+        let old = panel.frame
+        let size = self.size(at: zoom)
+        let a = anchor.flatMap { old.contains($0) ? $0 : nil } ?? NSPoint(x: old.midX, y: old.midY)
+        let fx = (a.x - old.minX) / old.width, fy = (a.y - old.minY) / old.height
+        let frame = NSRect(x: (a.x - fx * size.width).rounded(), y: (a.y - fy * size.height).rounded(),
+                           width: size.width, height: size.height)
+        state.zoom = zoom
+        panel.setFrame(frame, display: true, animate: animate)
+        panel.invalidateShadow()
+        flash()
+    }
+
+    func toggleActualSize() {
+        let screen = panel.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
+        let fit = min(1, screen.width * 0.6 / baseSize.width, screen.height * 0.6 / baseSize.height)
+        setZoom(abs(state.zoom - 1) < 0.01 ? fit : 1, around: NSEvent.mouseLocation, animate: true)
+    }
+
+    func setOpacity(_ opacity: CGFloat) {
+        let opacity = min(max(opacity, FloatOpacity.range.lowerBound), FloatOpacity.range.upperBound)
+        guard opacity != state.opacity else { return }
+        state.opacity = opacity
+        content.setImageOpacity(opacity)
+        panel.invalidateShadow()
+        flash()
+    }
+
+    /// Shows the opacity and zoom for a moment.
+    func flash(_ message: String? = nil) {
+        state.message = message
+        state.flashing = true
+        flashTimer?.invalidate()
+        flashTimer = Timer.scheduledTimer(withTimeInterval: message == nil ? 1.1 : 2.2, repeats: false) { [weak self] _ in
+            self?.state.flashing = false
+            self?.state.message = nil
+        }
+    }
+
+    // MARK: Translation
+
+    /// The image on screen: the translation or the original.
+    var shownImage: CGImage { state.showsTranslation ? translated ?? original : original }
+
+    /// The clip of what's on screen, if it is one.
+    var shownClip: ClipItem? { state.showsTranslation ? translatedClip : item }
+
+    func beginTranslating() -> Int {
+        generation += 1
+        state.status = "Translating…"
+        return generation
+    }
+
+    func isCurrent(_ generation: Int) -> Bool { generation == self.generation }
+
+    /// `problem` says what part couldn't be translated, if any.
+    func showTranslation(_ image: CGImage, clip: ClipItem?, target: String, problem: String? = nil) {
+        translated = image
+        translatedClip = clip
+        state.status = nil
+        state.language = target
+        // Also when a translation into another language replaces the one showing.
+        state.showsTranslation = true
+        content.setImage(image)
+        flash(problem.map { "Partly translated: \($0)" }
+              ?? "\(Translator.name(of: target))\(clip == nil ? "" : " · saved as a clip") · T for the original")
+    }
+
+    /// Google Translate's web page translates images well too: the image goes on the clipboard
+    /// and its Images tab opens, ready for ⌘V. Nothing is sent until it's pasted there.
+    func openInGoogleTranslate() {
+        onGoogle(state.language ?? translationTargets().first ?? "vi")
+    }
+
+    func translationFailed(_ message: String) {
+        state.status = nil
+        flash(message)
+    }
+
+    /// Switches between the translation and the image as it was.
+    func show(translation: Bool) {
+        let showing = translation && translated != nil
+        guard showing != state.showsTranslation else { return }
+        state.showsTranslation = showing
+        content.setImage(showing ? translated! : original)
+    }
+
+    // MARK: Locking
+
+    func setLocked(_ locked: Bool) {
+        guard locked != state.locked else { return }
+        state.locked = locked
+        panel.ignoresMouseEvents = locked
+        if locked {
+            flash("Locked · clicks pass through")
+        } else {
+            flash()
+        }
+        onLockChange()
+    }
+
+
+    // MARK: Keys
+
+    func handle(_ event: NSEvent) -> Bool {
+        let f = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        // Holding Space shows the original under a translation.
+        if event.keyCode == 49, f.isEmpty, translated != nil {
+            if event.type == .keyDown, !event.isARepeat { show(translation: false) }
+            if event.type == .keyUp { show(translation: true) }
+            return true
+        }
+        guard event.type == .keyDown else { return false }
+        switch event.keyCode {
+        case 53: close(); return true                                  // Esc
+        case 126: setOpacity(state.opacity + 0.1); return true         // ↑
+        case 125: setOpacity(state.opacity - 0.1); return true         // ↓
+        default: break
+        }
+        if f == .command {
+            switch chars {
+            case "w": close()
+            case "c": onCopy(); flash("Copied")
+            case "=", "+": setZoom(state.zoom * 1.25, animate: true)
+            case "-": setZoom(state.zoom * 0.8, animate: true)
+            case "0": setZoom(1, animate: true)
+            default: return false
+            }
+            return true
+        }
+        guard f.isEmpty else { return false }
+        switch chars {
+        case "e": onEdit()
+        case "l": setLocked(!state.locked)
+        case "t": toggleTranslation()
+        case "g": openInGoogleTranslate()
+        default:
+            // 1…9: into that language of Settings' list.
+            let targets = translationTargets()
+            guard let n = Int(chars), (1...min(9, targets.count)).contains(n) else { return false }
+            onTranslate(targets[n - 1])
+        }
+        return true
+    }
+
+    /// Shows the translation, translating first if need be, or the original again.
+    func toggleTranslation() {
+        if translated != nil { return show(translation: !state.showsTranslation) }
+        if state.status == nil { onTranslate(nil) }
+    }
+
+    func menu() -> NSMenu {
+        let menu = NSMenu()
+        func add(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags = [], _ action: @escaping () -> Void) {
+            let item = NSMenuItem(title: title, action: #selector(MenuAction.run), keyEquivalent: key)
+            item.keyEquivalentModifierMask = mask
+            let target = MenuAction(action)
+            item.target = target
+            item.representedObject = target
+            menu.addItem(item)
+        }
+        add("Edit Image…", "e") { [weak self] in self?.onEdit() }
+        add("Copy", "c", .command) { [weak self] in self?.onCopy() }
+        add(state.showsTranslation ? "Show Original" : "Translate", "t") { [weak self] in self?.toggleTranslation() }
+        add("Open in Google Translate", "g") { [weak self] in self?.openInGoogleTranslate() }
+        menu.addItem(.separator())
+        add(abs(state.zoom - 1) < 0.01 ? "Fit on Screen" : "Actual Size", "0", .command) { [weak self] in self?.toggleActualSize() }
+        add("Lock (Clicks Pass Through)", "l") { [weak self] in self?.setLocked(true) }
+        menu.addItem(.separator())
+        add("Close", "w", .command) { [weak self] in self?.close() }
+        return menu
+    }
+}
+
+/// Runs a closure from a menu item.
+private final class MenuAction: NSObject {
+    let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    @objc func run() { action() }
+}
+
+// MARK: - View
+
+/// The image, rounded. Its controls are in a strip of their own beside it (`FloatStripPanel`),
+/// so they never cover the picture, however small it is.
+final class FloatingImageView: NSView {
+    weak var window_: FloatingImageWindow?
+    private let imageLayer = CALayer()
+    private let state: FloatingImageState
+
+    init(image: CGImage, state: FloatingImageState, cornerRadius: CGFloat) {
+        self.state = state
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        imageLayer.contents = image
+        imageLayer.contentsGravity = .resize
+        imageLayer.minificationFilter = .trilinear
+        layer?.addSublayer(imageLayer)
+        // A hairline edge, so a white image still stands apart from a white window behind it.
+        let edge = CALayer()
+        edge.name = "edge"
+        edge.borderWidth = 0.5
+        edge.borderColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        edge.cornerRadius = cornerRadius
+        edge.cornerCurve = .continuous
+        layer?.addSublayer(edge)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Swaps the picture with a short fade, as between the original and its translation.
+    func setImage(_ image: CGImage) {
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = 0.18
+        imageLayer.add(fade, forKey: "contents")
+        imageLayer.contents = image
+    }
+
+    func setImageOpacity(_ opacity: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.08)
+        imageLayer.opacity = Float(opacity)
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        imageLayer.frame = bounds
+        layer?.sublayers?.first { $0.name == "edge" }?.frame = bounds
+        CATransaction.commit()
+    }
+
+    // MARK: Pointer
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { state.hovering = true }
+    override func mouseExited(with event: NSEvent) { state.hovering = false }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        if event.clickCount == 2 { return window_?.toggleActualSize() ?? () }
+        window?.performDrag(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? { window_?.menu() }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let owner = window_ else { return }
+        if event.modifierFlags.contains(.command) {
+            let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 150 : event.scrollingDeltaY / 15
+            owner.setZoom(owner.state.zoom * (1 + max(min(delta, 0.25), -0.25)), around: NSEvent.mouseLocation)
+            return
+        }
+        // The fling after lifting the fingers would carry on changing it; only the swipe itself counts.
+        guard event.momentumPhase.isEmpty else { return }
+        owner.setOpacity(FloatOpacity.after(owner.state.opacity, delta: event.scrollingDeltaY,
+                                            precise: event.hasPreciseScrollingDeltas,
+                                            inverted: event.isDirectionInvertedFromDevice))
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard let owner = window_ else { return }
+        owner.setZoom(owner.state.zoom * (1 + event.magnification), around: NSEvent.mouseLocation)
+    }
+}
+
+// MARK: - Controls
+
+/// The strip of controls under a floating image (above it at the bottom of the screen). It's a
+/// window of its own, attached to the image's, so it moves with it and never covers it.
+final class FloatStripPanel: NSPanel {
+    let hosting: StripHostingView
+
+    init(strip: FloatStrip) {
+        hosting = StripHostingView(rootView: strip)
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isFloatingPanel = true
+        level = .floating
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        alphaValue = 0
+        ignoresMouseEvents = true
+        contentView = hosting
+    }
+
+    /// Keys stay with the image.
+    override var canBecomeKey: Bool { false }
+}
+
+/// Hosts the strip: takes the first click with PasteClip in the background, and says when the
+/// pointer is over it, so the strip stays up while it's being used.
+final class StripHostingView: NSHostingView<FloatStrip> {
+    var onHover: (Bool) -> Void = { _ in }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover(true) }
+    override func mouseExited(with event: NSEvent) { onHover(false) }
+}
+
+/// Close · what's showing (language, opacity, zoom) or a message · Translate, Google, Edit,
+/// Copy · Lock. Buttons show their keys.
+struct FloatStrip: View {
+    static let infoWidth: CGFloat = 196
+    @ObservedObject var state: FloatingImageState
+    var close: () -> Void = {}
+    var zoom: (CGFloat) -> Void = { _ in }
+    var translate: () -> Void = {}
+    var google: () -> Void = {}
+    var edit: () -> Void = {}
+    var copy: () -> Void = {}
+    var lock: () -> Void = {}
+
+    var body: some View {
+        HStack(spacing: 2) {
+            StripButton(symbol: "xmark", help: "Close (Esc)", action: close)
+            separator
+            info.padding(.horizontal, 6)
+            separator
+            StripButton(symbol: "character.bubble", keys: "T", selected: state.showsTranslation,
+                        help: state.showsTranslation ? "Show the original (T, or hold Space)" : "Translate the text where it is (T)",
+                        action: translate)
+            StripButton(symbol: "globe", keys: "G", help: "Open in Google Translate: copies the image to paste there (G)", action: google)
+            StripButton(symbol: "pencil", keys: "E", help: "Edit (E)", action: edit)
+            StripButton(symbol: "doc.on.doc", keys: "⌘C", help: "Copy (⌘C)", action: copy)
+            separator
+            StripButton(symbol: state.locked ? "lock.fill" : "lock.open", selected: state.locked,
+                        help: state.locked ? "Unlock (L)" : "Lock: clicks pass through to the windows behind (L)", action: lock)
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 30)
+        .background(Capsule().fill(Color.black.opacity(0.16)))
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5))
+        .foregroundStyle(.white)
+        .environment(\.colorScheme, .dark)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var info: some View {
+        Group {
+            if let status = state.status {
+                Label(status, systemImage: "character.bubble")
+            } else if let message = state.message {
+                Text(message).help(message)
+            } else {
+                HStack(spacing: 8) {
+                    if state.showsTranslation, let language = state.language {
+                        Label(Translator.name(of: language), systemImage: "character.bubble")
+                            .help("1–9 for another language")
+                    }
+                    Label("\(Int((state.opacity * 100).rounded()))%", systemImage: "circle.lefthalf.filled")
+                        .help("Scroll up or down over the image to make it clearer or fainter (↑ ↓)")
+                    HStack(spacing: 2) {
+                        zoomButton("minus", factor: 0.8, help: "Zoom out (⌘−)")
+                        Text("\(Int((state.zoom * 100).rounded()))%").frame(minWidth: 32)
+                        zoomButton("plus", factor: 1.25, help: "Zoom in (⌘+). Pinch or ⌘ scroll also zoom")
+                    }
+                }
+            }
+        }
+        .labelStyle(ReadoutLabelStyle())
+        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+        // Always this wide, whatever it says, so the buttons never move under the pointer.
+        .frame(width: Self.infoWidth)
+        .lineLimit(1)
+        .truncationMode(.tail)
+    }
+
+    private var separator: some View {
+        Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 15).padding(.horizontal, 2)
+    }
+
+    private func zoomButton(_ symbol: String, factor: CGFloat, help: String) -> some View {
+        Button { zoom(factor) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 8, weight: .bold))
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(Color.white.opacity(0.14)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
+/// An icon with its key beside it.
+private struct StripButton: View {
+    let symbol: String
+    var keys: String?
+    var selected = false
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: symbol).font(.system(size: 10.5, weight: .semibold))
+                if let keys {
+                    Text(keys)
+                        .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(selected ? 0.9 : 0.6))
+                }
+            }
+            .padding(.horizontal, keys == nil ? 0 : 7)
+            .frame(minWidth: 24, minHeight: 24)
+            .background(Capsule().fill(selected ? Color.accentColor.opacity(0.85) : Color.clear))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(StripButtonStyle())
+        .help(help)
+    }
+}
+
+/// A soft highlight while pressed.
+private struct StripButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.18 : 0)))
+    }
+}
+
+private struct ReadoutLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) {
+            configuration.icon.font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+            configuration.title.lineLimit(1)
+        }
+    }
+}

@@ -42,7 +42,12 @@ final class ShelfController {
 
     var onPasted: () -> Void = {}
     var onTranslate: (ClipItem, String?) -> Void = { _, _ in }
-    var onTranslateText: (String) -> Void = { _ in }
+    /// Translates clips: their text, or the text in images.
+    var onTranslateItems: ([ClipItem]) -> Void = { _ in }
+    var onEditImage: (ClipItem) -> Void = { _ in }
+    var onFloatImages: ([ClipItem]) -> Void = { _ in }
+    /// Floats images with their text translated in place.
+    var onTranslateImages: ([ClipItem]) -> Void = { _ in }
 
     var isVisible: Bool { panel.isVisible }
 
@@ -58,6 +63,9 @@ final class ShelfController {
             self.hide()
             self.onTranslate(item, target)
         }
+        state.onEditImage = { [weak self] item in self?.editImage(item) }
+        state.onFloatImages = { [weak self] items in self?.floatImages(items) }
+        state.onTranslateImages = { [weak self] items in self?.translateImages(items) }
         state.onOpenSettings = { [weak self] in
             self?.hide()
             openSettings()
@@ -144,6 +152,31 @@ final class ShelfController {
         }, completionHandler: { [panel] in
             panel.orderOut(nil)
         })
+    }
+
+    private func editImage(_ item: ClipItem) {
+        guard item.isImage else { return NSSound.beep() }
+        hide()
+        onEditImage(item)
+    }
+
+    /// Floats the selected images; beeps if none of the selected clips is an image.
+    private func floatImages(_ items: [ClipItem]) {
+        let images = items.filter(\.isImage)
+        guard !images.isEmpty else { return NSSound.beep() }
+        hide()
+        onFloatImages(images)
+    }
+
+    /// For the float shortcut while the shelf is open.
+    func floatSelection() { floatImages(state.selectedItems) }
+
+    /// The translate-image key (⌃⌥Space): the selected images, floated and translated where their text is.
+    private func translateImages(_ items: [ClipItem]) {
+        let images = items.filter(\.isImage)
+        guard !images.isEmpty else { return NSSound.beep() }
+        hide()
+        onTranslateImages(images)
     }
 
     private func paste(_ items: [ClipItem], plainText: Bool) {
@@ -291,6 +324,10 @@ final class ShelfController {
         // Let typing reach the title field or the text editor.
         if state.textInputActive { return false }
 
+        if matches(settings.translateImageKey, event) {
+            translateImages(state.selectedItem.map { [$0] } ?? [])
+            return true
+        }
         let chars = event.charactersIgnoringModifiers?.lowercased()
         switch event.keyCode {
         case 49: state.closePreview(); return true                    // Space
@@ -302,19 +339,23 @@ final class ShelfController {
         default: break
         }
         if cmd, chars == "y" { state.closePreview(); return true }
-        if cmd, chars == "e", state.selectedItem?.isTextual == true { state.editing = true; return true }
+        if matches(settings.floatImageKey, event), let item = state.selectedItem { floatImages([item]); return true }
+        if cmd, chars == "e", let item = state.selectedItem {
+            if item.isTextual { state.editing = true } else { editImage(item) }
+            return true
+        }
         if cmd, chars == "p", let item = state.selectedItem { store.togglePin(item); return true }
         // Swallow plain typing so it doesn't land in the hidden search field.
         return !cmd
     }
 
-    /// For the translate shortcut while the shelf is open: closes it and hands over the text of
-    /// the selected clip, or of every selected clip, a line apart.
+    /// For the translate shortcut while the shelf is open: closes it and hands over the selected
+    /// clips with text, or images, whose text is read if it hasn't been yet.
     func translateSelection() {
-        let texts = state.selectedItems.compactMap(\.translatableText).filter { !$0.isEmpty }
-        guard !texts.isEmpty else { return NSSound.beep() }
+        let items = state.selectedItems.filter { $0.isImage || $0.translatableText?.isEmpty == false }
+        guard !items.isEmpty else { return NSSound.beep() }
         hide()
-        onTranslateText(texts.joined(separator: "\n"))
+        onTranslateItems(items)
     }
 
     private func handleShelfKey(_ event: NSEvent) -> Bool {
@@ -324,6 +365,8 @@ final class ShelfController {
 
         if matches(settings.nextPinboardKey, event) { state.cycleBoard(1); return true }
         if matches(settings.previousPinboardKey, event) { state.cycleBoard(-1); return true }
+        if matches(settings.floatImageKey, event) { floatImages(state.selectedItems); return true }
+        if matches(settings.translateImageKey, event) { translateImages(state.selectedItems); return true }
 
         // Quick paste: modifier + 1…9 (plus the plain-text modifier, if held).
         if let n = Self.digitKeys.firstIndex(of: event.keyCode), isHeld(settings.quickPasteModifier, in: event) {
@@ -370,6 +413,8 @@ final class ShelfController {
             if state.selectedItem?.isTextual == true {
                 state.previewing = true
                 state.editing = true
+            } else if let item = state.selectedItem {
+                editImage(item)
             }
             return true
         case "p":
@@ -384,6 +429,9 @@ final class ShelfController {
             return true
         case "f":
             state.focusToken = UUID()
+            return true
+        case "i":
+            state.toggleImagesOnly()
             return true
         case ",":
             state.onOpenSettings()

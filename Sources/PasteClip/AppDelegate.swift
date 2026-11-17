@@ -6,7 +6,9 @@ import PasteClipSystem
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let settings = AppSettings()
-    private let store = ClipStore()
+    /// `--store <folder>` keeps history somewhere else, for trying things out without touching your own.
+    private let store = ClipStore(directory: CommandLine.arguments.firstIndex(of: "--store")
+        .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) : nil })
     private lazy var sync = CloudSync(store: store)
     private lazy var apiKeys = APIKeys(directory: store.directory)
     private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, sync: sync, keys: apiKeys)
@@ -15,7 +17,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private lazy var stackPanel = StackController(store: store, settings: settings)
     private lazy var screenText = ScreenTextCapture(store: store, settings: settings)
+    private lazy var screenshot = ScreenshotCapture(store: store, settings: settings)
+    private lazy var screenTranslation = ScreenTranslation()
     private lazy var translation = TranslationController(store: store, settings: settings, keys: apiKeys)
+    private lazy var imageEditors = ImageEditors(store: store, settings: settings)
+    private lazy var floatingImages = FloatingImages(store: store, settings: settings, keys: apiKeys)
     private var statusItem: NSStatusItem!
     private var hotKeys: [HotKey] = []
     private var subscriptions = Set<AnyCancellable>()
@@ -28,9 +34,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shelf.onPasted = { [weak self] in self?.play("Pop") }
         screenText.onCopied = { [weak self] in self?.play("Tink") }
         screenText.onTranslate = { [weak self] text in self?.translation.show(text) }
-        shelf.onTranslateText = { [weak self] text in self?.translation.show(text) }
-        shelf.onTranslate = { [weak self] item, target in
-            if let text = item.translatableText { self?.translation.show(text, target: target) }
+        shelf.onTranslateItems = { [weak self] items in self?.translation.show(items) }
+        shelf.onTranslate = { [weak self] item, target in self?.translation.show([item], target: target) }
+        shelf.onEditImage = { [weak self] item in self?.imageEditors.edit(item) }
+        shelf.onFloatImages = { [weak self] items in items.forEach { self?.floatingImages.show($0) } }
+        imageEditors.onFloat = { [weak self] item in self?.floatingImages.show(item) }
+        floatingImages.onEdit = { [weak self] item in self?.imageEditors.edit(item) }
+        shelf.onTranslateImages = { [weak self] items in items.forEach { self?.floatingImages.show($0, translate: true) } }
+        translation.onShowOnImage = { [weak self] item, target in self?.floatingImages.show(item, translate: true, target: target) }
+        screenTranslation.onCaptured = { [weak self] image, placement in self?.floatingImages.showTranslated(image, over: placement) }
+        screenshot.onCaptured = { [weak self] item in
+            guard let self else { return }
+            self.play("Tink")
+            switch self.settings.screenshotAction {
+            case .copy: break
+            case .edit: self.imageEditors.edit(item)
+            case .float: self.floatingImages.show(item)
+            }
         }
         store.start()
         // Moves keys left in a plain file by earlier builds into the keychain, without reading it otherwise.
@@ -42,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Lets you jump straight to a screen while working on the UI:
-    /// `PasteClip --open shelf|preview|general|text|translation|privacy|shortcuts`, or `--translate "some text"`.
+    /// `PasteClip --open shelf|preview|editor|float|general|text|translation|privacy|shortcuts`, or `--translate "some text"`.
     private func openFromArguments() {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--translate"), args.indices.contains(i + 1) {
@@ -55,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if args[i + 1] == "preview" {
             shelf.show()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.shelf.showPreview() }
+        } else if args[i + 1] == "editor" || args[i + 1] == "float", let image = store.items.first(where: \.isImage) {
+            args[i + 1] == "editor" ? imageEditors.edit(image) : floatingImages.show(image)
         } else if let page = SettingsPage(rawValue: args[i + 1]) {
             settingsWindow.show(page)
         }
@@ -90,7 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Re-register shortcuts when they change; drop them while a shortcut field is recording.
         let shortcuts = [settings.$shelfHotKey, settings.$stackHotKey, settings.$pasteNextHotKey,
-                         settings.$captureTextHotKey, settings.$translateHotKey]
+                         settings.$captureTextHotKey, settings.$screenshotHotKey, settings.$translateHotKey,
+                         settings.$translateScreenHotKey, settings.$floatImageKey]
         Publishers.MergeMany(shortcuts.map { $0.map { _ in () }.eraseToAnyPublisher() }
                              + [settings.$isRecordingShortcut.map { _ in () }.eraseToAnyPublisher()])
             .debounce(for: .milliseconds(10), scheduler: DispatchQueue.main)
@@ -120,6 +143,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (settings.stackHotKey, { [weak self] in self?.toggleStack() }),
             (settings.pasteNextHotKey, { [weak self] in self?.pasteNextFromStack() }),
             (settings.captureTextHotKey, { [weak self] in self?.captureText() }),
+            (settings.screenshotHotKey, { [weak self] in self?.captureScreenshot() }),
+            (settings.translateScreenHotKey, { [weak self] in self?.translateScreen() }),
+            (settings.floatImageKey, { [weak self] in self?.floatImage() }),
             (settings.translateHotKey, { [weak self] in self?.translate() }),
         ]
         for (combo, action) in bindings {
@@ -160,6 +186,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func captureText() {
         shelf.hide()
         screenText.start()
+    }
+
+    @objc private func translateScreen() {
+        shelf.hide()
+        screenTranslation.start()
+    }
+
+    /// The image being edited, the images selected in the shelf, or else the latest image.
+    @objc private func floatImage() {
+        if imageEditors.floatFromFrontEditor() { return }
+        if shelf.isVisible { return shelf.floatSelection() }
+        guard let item = store.items.first(where: \.isImage) else { return NSSound.beep() }
+        floatingImages.show(item)
+    }
+
+    @objc private func captureScreenshot() {
+        shelf.hide()
+        screenshot.start()
     }
 
     // MARK: - Translation
@@ -218,7 +262,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item(store.stackMode ? "Stop Paste Stack" : "Start Paste Stack", #selector(toggleStack),
                           settings.stackHotKey))
         menu.addItem(item("Copy Text from Screen", #selector(captureText), settings.captureTextHotKey))
+        menu.addItem(item("Capture Screen Area", #selector(captureScreenshot), settings.screenshotHotKey))
+        menu.addItem(item("Translate Screen Area", #selector(translateScreen), settings.translateScreenHotKey))
+        menu.addItem(item("Float Latest Image", #selector(floatImage), settings.floatImageKey))
         menu.addItem(item("Translate Selection or Clipboard", #selector(translate), settings.translateHotKey))
+        if floatingImages.count > 0 {
+            menu.addItem(.separator())
+            if floatingImages.hasLocked { menu.addItem(item("Unlock Floating Images", #selector(unlockFloatingImages), nil)) }
+            menu.addItem(item(floatingImages.count == 1 ? "Close Floating Image" : "Close \(floatingImages.count) Floating Images",
+                              #selector(closeFloatingImages), nil))
+        }
         menu.addItem(.separator())
         menu.addItem(item(store.paused ? "Resume Capturing" : "Pause Capturing", #selector(togglePause), nil))
         if !Paster.isTrusted {
@@ -249,6 +302,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openShelf() { shelf.show() }
+
+    @objc private func closeFloatingImages() { floatingImages.closeAll() }
+
+    @objc private func unlockFloatingImages() { floatingImages.unlockAll() }
 
     @objc private func openSettings() { settingsWindow.show() }
 

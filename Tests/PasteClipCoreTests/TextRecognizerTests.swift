@@ -31,8 +31,10 @@ private func line(_ text: String, y: CGFloat, x: CGFloat = 0.1, width: CGFloat =
         "会议在上海举行",
         "Tên: Nguyễn Thị Hương, 東京 office",
     ]), languages: TextRecognizer.defaultLanguages))
+    // Fails (rather than crashing) when macOS's text recognition isn't working on this Mac.
+    #expect(!TextRecognizer.isFailing, "macOS text recognition is failing; restart the Mac and run again")
     let lines = text.components(separatedBy: "\n")
-    #expect(lines.count == 4)
+    try #require(lines.count == 4)
     #expect(lines[0] == "Meeting: Họp dự án lúc 10 giờ")
     #expect(lines[1] == "会議は東京で行います")
     #expect(lines[2] == "会议在上海举行")
@@ -98,7 +100,7 @@ private func line(_ text: String, y: CGFloat, x: CGFloat = 0.1, width: CGFloat =
     let settings = AppSettings(defaults: defaults)
     #expect(settings.textLanguages == ["en-US", "vi-VT", "ja-JP", "zh-Hans"])
     #expect(settings.keepLineBreaks)
-    #expect(settings.captureTextHotKey?.display == "⇧⌘2")
+    #expect(settings.captureTextHotKey?.display == "⌥⇧⌘2")
     settings.textLanguages.append("ko-KR")
     #expect(AppSettings(defaults: defaults).textLanguages.last == "ko-KR")
 }

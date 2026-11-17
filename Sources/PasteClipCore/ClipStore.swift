@@ -265,6 +265,22 @@ public final class ClipStore: ObservableObject {
         return item
     }
 
+    /// Reads the text in an image clip or a copied image file now, whatever the setting, keeps it
+    /// with the clip (so it can be searched and is ready next time) and hands it over. A clip that
+    /// already has its text gets it straight back.
+    public func readText(in item: ClipItem, completion: @escaping (String?) -> Void) {
+        if let text = item.ocrText { return completion(text) }
+        guard item.isImage, let url = pictureURL(for: item) else { return completion(nil) }
+        TextRecognizer.recognize(imageAt: url, languages: recognitionLanguages) { [weak self] text in
+            if let self, let text, let i = self.index(of: item.id) {
+                self.items[i].ocrText = text
+                self.save()
+                self.notify(saved: [.clip(item.id)], deleted: [])
+            }
+            completion(text)
+        }
+    }
+
     private func recognizeText(in item: ClipItem) {
         guard recognizesText, let url = imageURL(for: item) else { return }
         TextRecognizer.recognize(imageAt: url, languages: recognitionLanguages) { [weak self] text in
@@ -416,12 +432,31 @@ public final class ClipStore: ObservableObject {
         lastChangeCount = pasteboard.changeCount
     }
 
+    /// Puts an image on the clipboard without adding it to history, to paste somewhere once.
+    public func copyImageWithoutSaving(_ png: Data) {
+        pasteboard.clearContents()
+        pasteboard.setData(png, forType: .png)
+        if let tiff = NSImage(data: png)?.tiffRepresentation { pasteboard.setData(tiff, forType: .tiff) }
+        lastChangeCount = pasteboard.changeCount
+    }
+
     /// Adds a text clip typed by the user, or read from the screen.
     @discardableResult
     public func addText(_ text: String, title: String? = nil, source: String = "PasteClip") -> ClipItem? {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         var item = ClipItem(kind: ClipKind.detect(text), text: text, sourceBundleID: Bundle.main.bundleIdentifier,
                             sourceName: source)
+        item.title = title
+        return insert(item)
+    }
+
+    /// Adds an image clip made in PasteClip, such as an edited copy of another image.
+    @discardableResult
+    public func addImage(_ png: Data, title: String? = nil, source: String = "PasteClip") -> ClipItem? {
+        var item = ClipItem(kind: .image, sourceBundleID: Bundle.main.bundleIdentifier, sourceName: source)
+        let name = "\(item.id.uuidString).png"
+        guard (try? png.write(to: imageDir.appendingPathComponent(name))) != nil else { return nil }
+        item.imageFile = name
         item.title = title
         return insert(item)
     }
@@ -613,6 +648,11 @@ public final class ClipStore: ObservableObject {
 
     public func imageURL(for item: ClipItem) -> URL? {
         item.imageFile.map { imageDir.appendingPathComponent($0) }
+    }
+
+    /// Where the picture of an image clip or a copied image file is.
+    public func pictureURL(for item: ClipItem) -> URL? {
+        imageURL(for: item) ?? item.copiedImagePath.map { URL(fileURLWithPath: $0) }
     }
 
     public func richURL(for item: ClipItem) -> URL? {

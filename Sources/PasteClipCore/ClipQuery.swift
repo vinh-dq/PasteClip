@@ -22,7 +22,7 @@ public enum TypeFilter: String, CaseIterable, Identifiable {
         case .pinned: return item.pinned
         case .text: return item.kind == .text
         case .link: return item.kind == .link
-        case .image: return item.kind == .image
+        case .image: return item.isImage
         case .file: return item.kind == .file
         case .color: return item.kind == .color
         }

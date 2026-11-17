@@ -105,6 +105,13 @@ private struct CardMenu: View {
             Button("Paste \(picked.count) Clips") { state.onPasteMany(picked, false) }
             Button("Paste as Plain Text") { state.onPasteMany(picked, true) }
             Button("Copy \(picked.count) Clips") { store.copyToPasteboard(picked) }
+            let images = picked.filter(\.isImage)
+            if !images.isEmpty {
+                Button(images.count == 1 ? "Float Image on Screen" : "Float \(images.count) Images on Screen") {
+                    state.onFloatImages(images)
+                }
+                .keyboardShortcut(settings.floatImageKey)
+            }
             Divider()
             Button("Add to Paste Stack") { picked.forEach(store.addToStack) }
             Divider()
@@ -134,10 +141,20 @@ private struct CardMenu: View {
                 state.editing = true
             }
         }
+        if item.isImage {
+            Button("Edit Image…") { state.onEditImage(item) }
+                .keyboardShortcut("e", modifiers: .command)
+            Button("Float on Screen") { state.onFloatImages([item]) }
+                .keyboardShortcut(settings.floatImageKey)
+        }
         Button("Rename…") { state.startRenaming(index) }
-        if item.translatableText?.isEmpty == false {
+        if item.translatableText?.isEmpty == false || item.isImage {
             Menu("Translate") {
                 Button("Translate") { state.onTranslate(item, nil) }
+                if item.isImage {
+                    Button("Translate on the Image") { state.onTranslateImages([item]) }
+                        .keyboardShortcut(settings.translateImageKey)
+                }
                 Divider()
                 ForEach(settings.translationTargets, id: \.self) { language in
                     Button("Into \(Translator.name(of: language))") { state.onTranslate(item, language) }

@@ -31,10 +31,18 @@ public struct KeyCombo: Codable, Equatable {
     // → = 124, ← = 123. Only active while the shelf is open.
     public static let nextPinboard = KeyCombo(keyCode: 124, modifiers: command, keyName: "→")
     public static let previousPinboard = KeyCombo(keyCode: 123, modifiers: command, keyName: "←")
-    // 2 = 19. ⇧⌘3, 4 and 5 are the system's screenshot shortcuts.
-    public static let captureText = KeyCombo(keyCode: 19, modifiers: command | shift, keyName: "2")
+    // 2 = 19. ⇧⌘3, 4 and 5 are the system's screenshot shortcuts. ⇧⌘2 translates an area of the
+    // screen; copying its text moved to ⌥⇧⌘2 in 1.7.
+    public static let captureText = KeyCombo(keyCode: 19, modifiers: option | command | shift, keyName: "2")
+    public static let translateScreen = KeyCombo(keyCode: 19, modifiers: command | shift, keyName: "2")
     // Space = 49.
     public static let translate = KeyCombo(keyCode: 49, modifiers: control, keyName: "Space")
+    // 1 = 18, next to ⇧⌘2 for text.
+    public static let captureArea = KeyCombo(keyCode: 18, modifiers: command | shift, keyName: "1")
+    // Space = 49. Only active while the shelf is open, where ⌃Space translates text.
+    public static let translateImage = KeyCombo(keyCode: 49, modifiers: control | option, keyName: "Space")
+    // P = 35. Floats the latest image, or the ones selected in the shelf.
+    public static let floatImage = KeyCombo(keyCode: 35, modifiers: command | shift, keyName: "P")
 
     /// Whether macOS has this shortcut turned on for itself (System Settings → Keyboard → Keyboard
     /// Shortcuts), such as ⌃Space for switching input sources. macOS gets the key first then.
@@ -56,6 +64,20 @@ public struct KeyCombo: Codable, Equatable {
 
     public static func systemHotKeys() -> [String: Any]? {
         UserDefaults(suiteName: "com.apple.symbolichotkeys")?.dictionary(forKey: "AppleSymbolicHotKeys")
+    }
+}
+
+/// What happens to a screenshot of an area once it's saved and copied.
+public enum ScreenshotAction: String, CaseIterable, Identifiable {
+    case copy, edit, float
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .copy: return "Copy it"
+        case .edit: return "Copy it and open it for marking up"
+        case .float: return "Copy it and float it on the screen"
+        }
     }
 }
 
@@ -137,6 +159,17 @@ public final class AppSettings: ObservableObject {
     @Published public var nextPinboardKey: KeyCombo? { didSet { store(nextPinboardKey, "nextPinboardKey") } }
     @Published public var previousPinboardKey: KeyCombo? { didSet { store(previousPinboardKey, "previousPinboardKey") } }
     @Published public var captureTextHotKey: KeyCombo? { didSet { store(captureTextHotKey, "captureTextHotKey") } }
+    /// In the shelf: floats the selected images, translated where their text is.
+    @Published public var translateImageKey: KeyCombo? { didSet { store(translateImageKey, "translateImageKey") } }
+    /// Translates an area of the screen, shown over it.
+    @Published public var translateScreenHotKey: KeyCombo? { didSet { store(translateScreenHotKey, "translateScreenHotKey") } }
+    /// Takes a screenshot of an area, saved as an image clip.
+    @Published public var screenshotHotKey: KeyCombo? { didSet { store(screenshotHotKey, "screenshotHotKey") } }
+    @Published public var screenshotAction: ScreenshotAction {
+        didSet { defaults.set(screenshotAction.rawValue, forKey: "screenshotAction") }
+    }
+    /// Floats the latest image clip, or the ones selected in the shelf, or the image being edited.
+    @Published public var floatImageKey: KeyCombo? { didSet { store(floatImageKey, "floatImageKey") } }
     @Published public var quickPasteModifier: ModifierKey { didSet { defaults.set(quickPasteModifier.rawValue, forKey: "quickPasteModifier") } }
     @Published public var plainTextModifier: ModifierKey { didSet { defaults.set(plainTextModifier.rawValue, forKey: "plainTextModifier") } }
 
@@ -169,6 +202,10 @@ public final class AppSettings: ObservableObject {
     @Published public var translateScreenText: Bool { didSet { defaults.set(translateScreenText, forKey: "translateScreenText") } }
     /// Add copied and pasted translations to history.
     @Published public var saveTranslations: Bool { didSet { defaults.set(saveTranslations, forKey: "saveTranslations") } }
+    /// Add images translated where their text is to history.
+    @Published public var saveImageTranslations: Bool {
+        didSet { defaults.set(saveImageTranslations, forKey: "saveImageTranslations") }
+    }
     /// The model chosen for each AI service, by its raw value; a missing one uses the service's default.
     @Published public var translationModels: [String: String] {
         didSet { defaults.set(translationModels, forKey: "translationModels") }
@@ -205,6 +242,11 @@ public final class AppSettings: ObservableObject {
         nextPinboardKey = Self.load(defaults, "nextPinboardKey", default: .nextPinboard)
         previousPinboardKey = Self.load(defaults, "previousPinboardKey", default: .previousPinboard)
         captureTextHotKey = Self.load(defaults, "captureTextHotKey", default: .captureText)
+        floatImageKey = Self.load(defaults, "floatImageKey", default: .floatImage)
+        screenshotHotKey = Self.load(defaults, "screenshotHotKey", default: .captureArea)
+        translateScreenHotKey = Self.load(defaults, "translateScreenHotKey", default: .translateScreen)
+        translateImageKey = Self.load(defaults, "translateImageKey", default: .translateImage)
+        screenshotAction = ScreenshotAction(rawValue: defaults.string(forKey: "screenshotAction") ?? "") ?? .copy
         quickPasteModifier = ModifierKey(rawValue: defaults.string(forKey: "quickPasteModifier") ?? "") ?? .command
         plainTextModifier = ModifierKey(rawValue: defaults.string(forKey: "plainTextModifier") ?? "") ?? .shift
         pasteMode = PasteMode(rawValue: defaults.string(forKey: "pasteMode") ?? "") ?? .frontApp
@@ -222,10 +264,17 @@ public final class AppSettings: ObservableObject {
         translateSelection = defaults.object(forKey: "translateSelection") as? Bool ?? true
         translateScreenText = defaults.bool(forKey: "translateScreenText")
         saveTranslations = defaults.object(forKey: "saveTranslations") as? Bool ?? true
+        saveImageTranslations = defaults.object(forKey: "saveImageTranslations") as? Bool ?? true
         microsoftRegion = defaults.string(forKey: "microsoftRegion") ?? ""
         translationModelLists = defaults.dictionary(forKey: "translationModelLists") as? [String: [String]] ?? [:]
         translationShowsOriginal = defaults.object(forKey: "translationShowsOriginal") as? Bool ?? true
         translationModels = defaults.dictionary(forKey: "translationModels") as? [String: String] ?? [:]
+        // ⇧⌘2 copied text from the screen before it translated it; a copy of that shortcut saved
+        // then (by resetting shortcuts) moves along with the new default.
+        if defaults.data(forKey: "translateScreenHotKey") == nil, captureTextHotKey == .translateScreen {
+            captureTextHotKey = .captureText
+            store(captureTextHotKey, "captureTextHotKey")
+        }
     }
 
     public func resetShortcuts() {
@@ -235,6 +284,10 @@ public final class AppSettings: ObservableObject {
         nextPinboardKey = .nextPinboard
         previousPinboardKey = .previousPinboard
         captureTextHotKey = .captureText
+        floatImageKey = .floatImage
+        screenshotHotKey = .captureArea
+        translateScreenHotKey = .translateScreen
+        translateImageKey = .translateImage
         translateHotKey = .translate
         quickPasteModifier = .command
         plainTextModifier = .shift

@@ -124,6 +124,12 @@ final class ShelfState: ObservableObject {
     /// Translates a clip, into the given language or the first one it isn't in.
     var onTranslate: (ClipItem, String?) -> Void = { _, _ in }
     var onOpenSettings: () -> Void = {}
+    /// Opens an image clip in the image editor.
+    var onEditImage: (ClipItem) -> Void = { _ in }
+    /// Floats image clips on the screen.
+    var onFloatImages: ([ClipItem]) -> Void = { _ in }
+    /// Floats images with their text translated where it is.
+    var onTranslateImages: ([ClipItem]) -> Void = { _ in }
     private var subscriptions = Set<AnyCancellable>()
 
     init(store: ClipStore) {
@@ -217,6 +223,11 @@ final class ShelfState: ObservableObject {
         selection = 0
     }
 
+    /// Shows only images, or every type again.
+    func toggleImagesOnly() {
+        query.type = query.type == .image ? .all : .image
+    }
+
     func togglePreview() {
         if previewing { closePreview() } else if selectedItem != nil { previewing = true }
     }
@@ -288,6 +299,7 @@ struct ShelfView: View {
         ZStack {
             HStack(spacing: 8) {
                 filterMenu
+                imagesToggle
                 Spacer()
                 if store.paused {
                     Label("Paused", systemImage: "pause.circle.fill").foregroundStyle(.orange)
@@ -445,6 +457,25 @@ struct ShelfView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .foregroundStyle(state.query.hasFilters ? Color.accentColor : Color.secondary)
+    }
+
+    /// One click (or ⌘I) for images only, and again for everything.
+    private var imagesToggle: some View {
+        let on = state.query.type == .image
+        return Button { state.toggleImagesOnly() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: on ? "photo.fill" : "photo")
+                Text("Images").font(.system(size: 12, weight: .medium))
+                KeyHint(keys: "⌘I")
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .foregroundStyle(on ? Color.primary : Color.secondary)
+            .contentShape(Capsule())
+            .glassCapsule(selected: on)
+        }
+        .buttonStyle(.plain)
+        .help(on ? "Show every type (⌘I)" : "Show only images (⌘I)")
     }
 
     private var filterSummary: String {

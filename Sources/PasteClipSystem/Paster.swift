@@ -19,6 +19,18 @@ public enum Paster {
         }
     }
 
+    /// The title of an app's focused window, such as a browser's page title. Needs Accessibility permission.
+    public static func focusedWindowTitle(of app: NSRunningApplication) -> String? {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        var window: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &window) == .success,
+              let window, CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &title) == .success
+        else { return nil }
+        return title as? String
+    }
+
     /// Sends ⌘C to the front app once modifier keys are let go, then calls `completion`.
     public static func copyInFrontApp(then completion: @escaping () -> Void) {
         guard isTrusted else { return completion() }

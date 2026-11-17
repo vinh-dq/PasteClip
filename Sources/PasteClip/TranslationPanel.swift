@@ -25,6 +25,9 @@ final class TranslationController {
     /// True while PasteClip itself places the panel, so only moves by the user are noticed.
     private var placing = false
     private var reading = false
+    /// The image clip being translated, which Show on Image floats with the translation on it.
+    private var imageItem: ClipItem?
+    var onShowOnImage: (ClipItem, String) -> Void = { _, _ in }
 
     init(store: ClipStore, settings: AppSettings, keys: APIKeys) {
         self.store = store
@@ -42,6 +45,7 @@ final class TranslationController {
         hosting.rootView.onCopy = { [weak self] in self?.copy() }
         hosting.rootView.onPaste = { [weak self] in self?.paste() }
         hosting.rootView.onSave = { [weak self] in self?.save() }
+        hosting.rootView.onShowOnImage = { [weak self] in self?.showOnImage() }
         hosting.rootView.onDownload = { [weak self] source, target in self?.download(source, target) }
         // Once dragged, the panel stays where it was put, growing downwards from there.
         NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
@@ -85,7 +89,10 @@ final class TranslationController {
         }
     }
 
-    func show(_ text: String, target: String? = nil) {
+    /// `image` is the image clip the text was read from, if it was.
+    func show(_ text: String, target: String? = nil, image: ClipItem? = nil) {
+        imageItem = image
+        model.fromImage = image != nil
         // Already up while the selection was read: it stays where it is.
         let placed = panel.isVisible
         model.start(text, target: target)
@@ -93,6 +100,39 @@ final class TranslationController {
         panel.makeKeyAndOrderFront(nil)
         installMonitors()
         fit()
+    }
+
+    /// Translates clips, a line apart: their text, or the text in an image. Images not read yet
+    /// are read first, with the panel already showing that it's working.
+    func show(_ items: [ClipItem], target: String? = nil) {
+        // One image can also show its translation on the image itself.
+        let image = items.count == 1 && items[0].isImage ? items[0] : nil
+        let texts = items.map(\.translatableText)
+        if !texts.contains(where: { $0 == nil }) {
+            let text = texts.compactMap { $0 }.filter { !Self.isBlank($0) }.joined(separator: "\n")
+            return Self.isBlank(text) ? showToast("Nothing to translate", symbol: "character.bubble")
+                : show(text, target: target, image: image)
+        }
+        showWaiting()
+        var found = [String?](repeating: nil, count: items.count)
+        let group = DispatchGroup()
+        for (i, item) in items.enumerated() {
+            group.enter()
+            store.readText(in: item) { text in
+                found[i] = text
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            let text = found.compactMap { $0 }.filter { !Self.isBlank($0) }.joined(separator: "\n")
+            guard !Self.isBlank(text) else {
+                self.hide()
+                return self.showToast(TextRecognizer.isFailing || items.count == 1 ? TextRecognizer.nothingFoundMessage : "No text found",
+                                      symbol: "text.viewfinder")
+            }
+            self.show(text, target: target, image: image)
+        }
     }
 
     /// Puts the panel up, translating, before there's text. It isn't made key, so the ⌘C that
@@ -134,7 +174,8 @@ final class TranslationController {
         if !types.contains(.fileURL), let text = pasteboard.string(forType: .string), !Self.isBlank(text) {
             return show(text)
         }
-        // An image on the clipboard: the text found in it.
+        // An image on the clipboard (or a copied image file): the text found in it, read now if need be.
+        if let first = store.items.first, first.isImage { return show([first]) }
         if let text = store.items.first?.translatableText, !Self.isBlank(text) { return show(text) }
         hide()
         showToast("Nothing to translate", symbol: "character.bubble")
@@ -314,8 +355,17 @@ final class TranslationController {
         case "s": save(); return true
         case "o": model.showsOriginal.toggle(); return true
         case "w": hide(); return true
+        case "i": showOnImage(); return true
         default: return false
         }
+    }
+
+    /// Floats the image with the translation written where its text is.
+    private func showOnImage() {
+        guard let imageItem else { return NSSound.beep() }
+        let target = model.target
+        hide()
+        onShowOnImage(imageItem, target)
     }
 }
 
@@ -359,6 +409,8 @@ final class TranslationModel: ObservableObject {
     /// The text was longer than `Translator.maxLength` and only its start is translated.
     @Published private(set) var shortened = false
     @Published var saved = false
+    /// The text was read from an image, which can show the translation in place.
+    @Published var fromImage = false
     /// Language pairs ("ja>vi") whose download was asked for in this session. Asking macOS again
     /// while it's still downloading makes its prompt flicker, so later asks show its progress instead.
     @Published private(set) var requestedDownloads: Set<String> = []
@@ -608,7 +660,7 @@ final class TranslationModel: ObservableObject {
 /// Apple translation sessions for language pairs that are downloaded, kept while PasteClip runs.
 @available(macOS 26.0, *)
 @MainActor
-private final class AppleSessions {
+final class AppleSessions {
     static let shared = AppleSessions()
     private var sessions: [String: TranslationSession] = [:]
 
@@ -706,6 +758,7 @@ struct TranslationView: View {
     var onCopy: () -> Void = {}
     var onPaste: () -> Void = {}
     var onSave: () -> Void = {}
+    var onShowOnImage: () -> Void = {}
     var onDownload: (String, String) -> Void = { _, _ in }
 
     var body: some View {
@@ -846,6 +899,16 @@ struct TranslationView: View {
             .foregroundStyle(.secondary)
             .help("Translation service (↑ ↓)")
             Spacer(minLength: 4)
+            if model.fromImage {
+                Button(action: onShowOnImage) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "photo")
+                        Text("Show on Image")
+                        KeyHint(keys: "⌘I")
+                    }
+                }
+                .help("Float the image with the translation where its text is (⌘I)")
+            }
             Button { model.showsOriginal.toggle() } label: {
                 Image(systemName: model.showsOriginal ? "text.badge.minus" : "text.quote")
             }

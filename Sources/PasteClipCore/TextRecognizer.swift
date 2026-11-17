@@ -52,6 +52,12 @@ public enum TextRecognizer {
 
     /// The text in `image`, or nil if there is none. Blocks while Vision runs, so call it off the main thread.
     public static func recognize(_ image: CGImage, languages: [String], keepLineBreaks: Bool = true) -> String? {
+        let text = Self.text(of: lines(in: image, languages: languages), keepLineBreaks: keepLineBreaks)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+    }
+
+    /// Every line of text in `image` and where it is. Blocks while Vision runs, so call it off the main thread.
+    public static func lines(in image: CGImage, languages: [String]) -> [Line] {
         let supported = Set(supportedLanguages)
         var groups: [[String]] = []
         for language in languages where supported.contains(language) {
@@ -64,24 +70,53 @@ public enum TextRecognizer {
         if groups.isEmpty { groups = [defaultLanguages] }
 
         var passes = [[Line]](repeating: [], count: groups.count)
+        var failed = false
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: groups.count) { i in
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.recognitionLanguages = groups[i]
-            // Correction swaps letters for dictionary words ("userID" → "userlD"), which breaks
-            // code, links and IDs, and made no difference to Vietnamese, Japanese or Chinese.
-            request.usesLanguageCorrection = false
-            try? VNImageRequestHandler(cgImage: image).perform([request])
             let script = Script(of: groups[i][0])
-            let lines = (request.results ?? []).compactMap { observation -> Line? in
+            var observations: [VNRecognizedTextObservation]?
+            do {
+                observations = try perform(.accurate, languages: groups[i], on: image)
+            } catch {
+                // macOS's accurate model can stop working (an "e5rt" error from the Neural
+                // Engine runtime, until a restart). The fast one still reads Latin writing,
+                // without Vietnamese accents; nothing reads Chinese or Japanese then.
+                lock.withLock { failed = true }
+                if script == .latin { observations = try? perform(.fast, languages: ["en-US"], on: image) }
+            }
+            let lines = (observations ?? []).compactMap { observation -> Line? in
                 guard let text = observation.topCandidates(1).first?.string else { return nil }
                 return Line(text: text, box: observation.boundingBox, script: script)
             }
             lock.withLock { passes[i] = lines }
         }
-        let text = Self.text(of: merge(passes), keepLineBreaks: keepLineBreaks)
-        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        failureLock.withLock { lastRunFailed = failed }
+        return merge(passes)
+    }
+
+    private static func perform(_ level: VNRequestTextRecognitionLevel, languages: [String],
+                                on image: CGImage) throws -> [VNRecognizedTextObservation] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = level
+        request.recognitionLanguages = languages
+        // Correction swaps letters for dictionary words ("userID" → "userlD"), which breaks
+        // code, links and IDs, and made no difference to Vietnamese, Japanese or Chinese.
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return request.results ?? []
+    }
+
+    private static let failureLock = NSLock()
+    nonisolated(unsafe) private static var lastRunFailed = false
+
+    /// Whether macOS couldn't run text recognition the last time it was asked to, so "no text"
+    /// may only mean it isn't working. Restarting the Mac fixes that.
+    public static var isFailing: Bool { failureLock.withLock { lastRunFailed } }
+
+    /// What to say when no text came back: there was none, or recognition isn't working.
+    public static var nothingFoundMessage: String {
+        isFailing ? "macOS text recognition isn't working right now. Restarting the Mac usually fixes it."
+            : "No text found in the image"
     }
 
     /// `image` drawn `factor` times larger, unless that would be more than 24 megapixels.
@@ -100,10 +135,13 @@ public enum TextRecognizer {
     // MARK: - Merging passes
 
     /// A line of text and where it is, in Vision's coordinates (0…1, origin at the bottom left).
-    struct Line: Equatable {
-        var text: String
-        var box: CGRect
+    public struct Line: Equatable {
+        public var text: String
+        public var box: CGRect
         var script: Script
+
+        /// Chinese or Japanese, which is written without spaces between words.
+        public var isHanOrKana: Bool { script == .hanAndKana }
     }
 
     /// The writing systems Vision reads with separate models.

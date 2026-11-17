@@ -166,7 +166,7 @@ public enum Translator {
     }
 
     /// The service's name for a language: Google wants "zh-CN", DeepL "ZH-HANS".
-    static func code(for language: String, in service: TranslationService) -> String {
+    public static func code(for language: String, in service: TranslationService) -> String {
         switch service {
         case .google, .googleCloud:
             return ["zh-Hans": "zh-CN", "zh-Hant": "zh-TW"][language] ?? base(of: language)
@@ -611,7 +611,8 @@ public extension ClipItem {
         switch kind {
         case .text: return text
         case .image: return ocrText
-        case .link, .file, .color: return nil
+        case .file: return copiedImagePath != nil ? ocrText : nil
+        case .link, .color: return nil
         }
     }
 }

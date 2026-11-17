@@ -298,6 +298,12 @@ private struct PreviewCard: View {
                     Button("Edit") { state.editing = true }
                         .help("Edit text (⌘E)")
                 }
+                if item.isImage {
+                    Button { state.onFloatImages([item]) } label: { Image(systemName: "pin") }
+                        .help("Float on screen")
+                    Button("Edit") { state.onEditImage(item) }
+                        .help("Mark up the image (⌘E)")
+                }
                 Button("Paste") { state.onPaste(item, false) }
                     .buttonStyle(.borderedProminent)
                     .help("Paste (Return)")
