@@ -175,7 +175,8 @@ final class FloatingImages {
 
     /// Google Translate's web page translates images well too, but has no API for it. The
     /// original image goes on the clipboard (not into history), the page's Images tab opens, and
-    /// once the browser is in front and the page has had time to load, ⌘V pastes it there.
+    /// once the page has loaded, ⌘V pastes it there, again until the page shows it. The floating
+    /// image closes, out of the way of the page and of the ⌘V.
     private func openInGoogleTranslate(_ window: FloatingImageWindow, into target: String) {
         let code = Translator.code(for: target, in: .google)
         guard let png = MarkupRenderer.pngData(window.original),
@@ -186,37 +187,51 @@ final class FloatingImages {
         guard Paster.isTrusted, let browser else {
             return window.flash("Copied · press ⌘V on the Google Translate page")
         }
-        window.flash("Opening Google Translate…")
+        window.close()
         let changeCount = NSPasteboard.general.changeCount
-        let deadline = Date().addingTimeInterval(15)
-        // The page is ready once its title is in: "Google Translate", "Google Dịch"… While it
-        // loads the tab shows its address (all lower case) or nothing. A slow start (the browser
-        // restoring its tabs, a slow network) just waits longer.
-        // The tab in front before the new one opens may be a Google page too, so the title has to
-        // be seen loading first, or else have had a while to change.
-        var sawLoading = false
+        let deadline = Date().addingTimeInterval(20)
+        // The page's address and loading state come from Accessibility (a window title won't do:
+        // Chrome's always has "Google Chrome" in it). The page's scripts, which take the paste,
+        // may start a little after it has loaded, so a paste that leaves the page as it was is
+        // tried again. The page changes at once when it takes an image, long before the
+        // translation is in; pasting again then would only start that over. A slow start (the
+        // browser restoring its tabs, a slow network) just waits longer.
+        var exposed = false
         var inFront: Date?
-        func waitForPage() {
-            let front = NSWorkspace.shared.frontmostApplication
-            var ready = false
-            if front?.bundleIdentifier == browser {
-                inFront = inFront ?? Date()
-                let titled = front.flatMap(Paster.focusedWindowTitle(of:))?.contains("Google") == true
-                if !titled { sawLoading = true }
-                ready = titled && (sawLoading || Date().timeIntervalSince(inFront!) > 2.5)
+        var loaded: (at: Date, url: URL?)?
+        var pasted: (at: Date, elements: Int)?
+        var tries = 0
+        func step() {
+            guard Date() < deadline, NSPasteboard.general.changeCount == changeCount else { return }
+            let next = { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: step) }
+            guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == browser else { return next() }
+            if !exposed { Paster.exposePages(of: front); exposed = true }
+            inFront = inFront ?? Date()
+            let waited = Date().timeIntervalSince(inFront!)
+            guard let page = Paster.frontPage(of: front) else {
+                // A browser that doesn't show its pages: paste once, after a while.
+                guard waited > 3 else { return next() }
+                return Paster.pasteIntoFrontApp()
             }
-            guard ready || Date() >= deadline else {
-                return DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: waitForPage)
+            guard page.loaded, page.url?.host?.hasPrefix("translate.google.") == true else {
+                loaded = nil
+                return next()
             }
-            // A moment for the page's scripts, which take the paste, to start.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                // Only into the browser, and only the image put there for it.
-                guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == browser,
-                      NSPasteboard.general.changeCount == changeCount else { return }
-                Paster.pasteIntoFrontApp()
+            // Another tab came to the front: start over there.
+            if loaded?.url != page.url { (loaded, pasted) = ((Date(), page.url), nil) }
+            guard Date().timeIntervalSince(loaded!.at) > 0.4 else { return next() }
+            if let pasted {
+                if page.elements != pasted.elements { return } // In.
+                guard Date().timeIntervalSince(pasted.at) > 1.5 else { return next() }
             }
+            guard tries < 4 else { return }
+            tries += 1
+            pasted = (Date(), page.elements)
+            self.windows.forEach { $0.panel.giveUpKey() }
+            Paster.pasteIntoFrontApp()
+            next()
         }
-        waitForPage()
+        step()
     }
 
     /// Adds a translated image to history, named after the clip it came from and the language.
@@ -289,7 +304,19 @@ final class FloatingImagePanel: NSPanel {
         animationBehavior = .utilityWindow
     }
 
-    override var canBecomeKey: Bool { true }
+    private var refusesKey = false
+    override var canBecomeKey: Bool { !refusesKey }
+
+    /// Lets keys go to the app in front again. A panel that doesn't activate PasteClip stays key
+    /// when another app comes to the front, and would take keys sent to that app (a ⌘V meant
+    /// for a browser, say); it's key again once clicked.
+    func giveUpKey() {
+        guard isKeyWindow else { return }
+        refusesKey = true
+        orderOut(nil)
+        orderFrontRegardless()
+        refusesKey = false
+    }
 
     /// Keys for the image, whichever view has the focus (a clicked button can take it).
     var onKey: ((NSEvent) -> Bool)?

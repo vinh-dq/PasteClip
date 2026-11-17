@@ -134,7 +134,7 @@ turn it off there or pick another shortcut. Settings shows a warning next to any
 | Pinch, ⌘ scroll, ⌘+ ⌘−, − + in the readout | Zoom |
 | ⌘0 / double-click | Actual size / fit |
 | T / hold Space / 1…9 | Translate where the text is, or back to the original / peek at the original / into another language |
-| G | Open the original image in Google Translate's Images page: it's opened and pasted there for you |
+| G | Open the original image in Google Translate's Images page: it's opened and pasted there for you, and the floating image closes |
 | E / ⌘C | Edit / copy |
 | L | Lock: clicks pass through. The strip under it still shows when the pointer is over it, with the button to unlock it |
 | Esc / ⌘W | Close |
