@@ -37,6 +37,10 @@ struct CardsRow: View {
                     .padding(.vertical, 12)
                     // Room for the reorder bar beside the first and last cards.
                     .padding(.horizontal, 12)
+                    // The row's very ends, scrolled to for the first and last cards so that room
+                    // shows too; scrolling to the card itself leaves its edge flush and cut.
+                    .background(alignment: .leading) { Color.clear.frame(width: 1).id(RowEnd.start) }
+                    .background(alignment: .trailing) { Color.clear.frame(width: 1).id(RowEnd.end) }
                 }
                 .background { ScrollFollower(selection: selection, items: items, proxy: proxy) }
             }
@@ -368,6 +372,8 @@ private struct SelectionHint: View {
     }
 }
 
+private enum RowEnd: Hashable { case start, end }
+
 private struct ScrollFollower: View {
     @ObservedObject var selection: SelectionModel
     let items: [ClipItem]
@@ -382,10 +388,17 @@ private struct ScrollFollower: View {
             // re-lays out the row on each frame and falls behind, so repeats just jump.
             let repeating = Date().timeIntervalSince(lastMove.value) < 0.15
             lastMove.value = Date()
+            let scroll = {
+                switch selection.index {
+                case 0: proxy.scrollTo(RowEnd.start, anchor: .leading)
+                case items.count - 1: proxy.scrollTo(RowEnd.end, anchor: .trailing)
+                default: proxy.scrollTo(id)
+                }
+            }
             if repeating {
-                proxy.scrollTo(id)
+                scroll()
             } else {
-                withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id) }
+                withAnimation(.easeOut(duration: 0.12)) { scroll() }
             }
         }
     }
