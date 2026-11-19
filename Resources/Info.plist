@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>PasteClip</string>
+	<key>CFBundleExecutable</key>
+	<string>PasteClip</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.cmdn-vinhdang.pasteclip</string>
+	<key>CFBundleName</key>
+	<string>PasteClip</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>PasteClip looks for a Google Translate tab already open in your browser, so pressing G on a floating image reuses it instead of opening another.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>PasteClip clip</string>
+			<key>UTTypeIdentifier</key>
+			<string>io.github.cmdn-vinhdang.pasteclip.clip</string>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>PasteClip pinboard</string>
+			<key>UTTypeIdentifier</key>
+			<string>io.github.cmdn-vinhdang.pasteclip.pinboard</string>
+		</dict>
+	</array>
+</dict>
+</plist>
