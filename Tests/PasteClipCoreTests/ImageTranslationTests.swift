@@ -78,7 +78,7 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
 @Test func translatingTheScreenTakesShiftCommand2() throws {
     let fresh = AppSettings(defaults: Scratch.defaults())
     #expect(fresh.translateScreenHotKey?.display == "⇧⌘2")
-    #expect(fresh.captureTextHotKey?.display == "⌥⇧⌘2")
+    #expect(fresh.captureTextHotKey?.display == "⌥Space")
     // Someone who saved ⇧⌘2 for copying text (Reset Shortcuts saves every default) gets it moved.
     let defaults = Scratch.defaults()
     defaults.set(try JSONEncoder().encode(KeyCombo.translateScreen), forKey: "captureTextHotKey")
@@ -198,18 +198,6 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
     #expect(!AppSettings(defaults: defaults).saveImageTranslations)
     // Text translations keep their own setting.
     #expect(AppSettings(defaults: defaults).saveTranslations)
-}
-
-@Test func translatingImagesInTheShelfHasItsOwnShortcut() throws {
-    let defaults = Scratch.defaults()
-    let settings = AppSettings(defaults: defaults)
-    #expect(settings.translateImageKey?.display == "⌃⌥Space")
-    settings.translateImageKey = KeyCombo(keyCode: 17, modifiers: KeyCombo.control | KeyCombo.shift, keyName: "T")
-    #expect(AppSettings(defaults: defaults).translateImageKey?.display == "⌃⇧T")
-    settings.translateImageKey = nil
-    #expect(AppSettings(defaults: defaults).translateImageKey == nil)
-    settings.resetShortcuts()
-    #expect(AppSettings(defaults: defaults).translateImageKey == .translateImage)
 }
 
 @Test func lettersOnAGradientAreTakenOutWithoutAPatch() throws {

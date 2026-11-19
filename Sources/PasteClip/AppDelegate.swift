@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         imageEditors.onFloat = { [weak self] item in self?.floatingImages.show(item) }
         floatingImages.onEdit = { [weak self] item in self?.imageEditors.edit(item) }
         shelf.onTranslateImages = { [weak self] items in items.forEach { self?.floatingImages.show($0, translate: true) } }
+        translation.onTranslateImage = { [weak self] item in self?.floatingImages.show(item, translate: true) }
         translation.onShowOnImage = { [weak self] item, target in self?.floatingImages.show(item, translate: true, target: target) }
         screenTranslation.onCaptured = { [weak self] image, placement in self?.floatingImages.showTranslated(image, over: placement) }
         screenshot.onCaptured = { [weak self] item in

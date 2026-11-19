@@ -64,6 +64,7 @@ final class TranslationController {
     }
 
     var isVisible: Bool { panel.isVisible }
+    var onTranslateImage: (ClipItem) -> Void = { _ in }
 
     /// For the shortcut: the text selected in the front app, or else the clipboard.
     func translateSelectionOrClipboard() {
@@ -74,8 +75,10 @@ final class TranslationController {
         let saved = Self.contents(of: pasteboard)
         let before = pasteboard.changeCount
         reading = true
-        // The panel shows at once, translating, while the selection is copied.
-        showWaiting()
+        // The panel shows at once, translating, while the selection is copied. Not when the clipboard
+        // holds an image: if nothing is selected it goes to the floating translation, and a panel
+        // shown and closed again first would flash.
+        if !clipboardHoldsImage { showWaiting() }
         // The copy is only borrowed: it isn't saved, and the clipboard is put back afterwards.
         store.captureSuspended = true
         Paster.copyInFrontApp { [weak self] in
@@ -167,6 +170,14 @@ final class TranslationController {
         panel.orderOut(nil)
     }
 
+    /// What `translateClipboard` would translate is an image: no text on the clipboard, and the latest clip is one.
+    private var clipboardHoldsImage: Bool {
+        let pasteboard = NSPasteboard.general
+        let hasText = !(pasteboard.types ?? []).contains(.fileURL)
+            && pasteboard.string(forType: .string).map { !Self.isBlank($0) } == true
+        return !hasText && store.items.first?.isImage == true
+    }
+
     private func translateClipboard() {
         let pasteboard = NSPasteboard.general
         let types = pasteboard.types ?? []
@@ -177,8 +188,11 @@ final class TranslationController {
         if !types.contains(.fileURL), let text = pasteboard.string(forType: .string), !Self.isBlank(text) {
             return show(text)
         }
-        // An image on the clipboard (or a copied image file): the text found in it, read now if need be.
-        if let first = store.items.first, first.isImage { return show([first]) }
+        // An image on the clipboard (or a copied image file): translated where its text is.
+        if let first = store.items.first, first.isImage {
+            hide()
+            return onTranslateImage(first)
+        }
         if let text = store.items.first?.translatableText, !Self.isBlank(text) { return show(text) }
         hide()
         showToast("Nothing to translate", symbol: "character.bubble")

@@ -896,9 +896,6 @@ private struct ShortcutsPage: View {
             Section {
                 LabeledContent("Next pinboard") { ShortcutField(combo: $settings.nextPinboardKey, settings: settings) }
                 LabeledContent("Previous pinboard") { ShortcutField(combo: $settings.previousPinboardKey, settings: settings) }
-                LabeledContent("Translate images where their text is") {
-                    ShortcutField(combo: $settings.translateImageKey, settings: settings)
-                }
                 Picker("Quick paste", selection: $settings.quickPasteModifier) {
                     ForEach([ModifierKey.command, .option, .control]) { Text("\($0.title) + 1…9").tag($0) }
                 }

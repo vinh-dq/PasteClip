@@ -25,22 +25,20 @@ public struct KeyCombo: Codable, Equatable {
     }
 
     // V = 9, C = 8
-    public static let openShelf = KeyCombo(keyCode: 9, modifiers: command | shift, keyName: "V")
-    public static let toggleStack = KeyCombo(keyCode: 8, modifiers: control | command, keyName: "C")
-    public static let pasteNext = KeyCombo(keyCode: 9, modifiers: control | command, keyName: "V")
+    public static let openShelf = KeyCombo(keyCode: 9, modifiers: control, keyName: "V")
+    public static let toggleStack = KeyCombo(keyCode: 8, modifiers: control | shift, keyName: "C")
+    public static let pasteNext = KeyCombo(keyCode: 9, modifiers: control | shift, keyName: "V")
     // → = 124, ← = 123. Only active while the shelf is open.
     public static let nextPinboard = KeyCombo(keyCode: 124, modifiers: command, keyName: "→")
     public static let previousPinboard = KeyCombo(keyCode: 123, modifiers: command, keyName: "←")
     // 2 = 19. ⇧⌘3, 4 and 5 are the system's screenshot shortcuts. ⇧⌘2 translates an area of the
-    // screen; copying its text moved to ⌥⇧⌘2 in 1.7.
-    public static let captureText = KeyCombo(keyCode: 19, modifiers: option | command | shift, keyName: "2")
+    // screen; copying its text is ⌥Space (Space = 49).
+    public static let captureText = KeyCombo(keyCode: 49, modifiers: option, keyName: "Space")
     public static let translateScreen = KeyCombo(keyCode: 19, modifiers: command | shift, keyName: "2")
     // Space = 49.
     public static let translate = KeyCombo(keyCode: 49, modifiers: control, keyName: "Space")
     // 1 = 18, next to ⇧⌘2 for text.
     public static let captureArea = KeyCombo(keyCode: 18, modifiers: command | shift, keyName: "1")
-    // Space = 49. Only active while the shelf is open, where ⌃Space translates text.
-    public static let translateImage = KeyCombo(keyCode: 49, modifiers: control | option, keyName: "Space")
     // F = 3. Floats the latest image, or the ones selected in the shelf. It was ⌥⌘P before.
     public static let floatImage = KeyCombo(keyCode: 3, modifiers: control, keyName: "F")
 
@@ -174,7 +172,6 @@ public final class AppSettings: ObservableObject {
     @Published public var previousPinboardKey: KeyCombo? { didSet { store(previousPinboardKey, "previousPinboardKey") } }
     @Published public var captureTextHotKey: KeyCombo? { didSet { store(captureTextHotKey, "captureTextHotKey") } }
     /// In the shelf: floats the selected images, translated where their text is.
-    @Published public var translateImageKey: KeyCombo? { didSet { store(translateImageKey, "translateImageKey") } }
     /// Translates an area of the screen, shown over it.
     @Published public var translateScreenHotKey: KeyCombo? { didSet { store(translateScreenHotKey, "translateScreenHotKey") } }
     /// Takes a screenshot of an area, saved as an image clip.
@@ -259,7 +256,6 @@ public final class AppSettings: ObservableObject {
         floatImageKey = Self.load(defaults, "floatImageKey", default: .floatImage)
         screenshotHotKey = Self.load(defaults, "screenshotHotKey", default: .captureArea)
         translateScreenHotKey = Self.load(defaults, "translateScreenHotKey", default: .translateScreen)
-        translateImageKey = Self.load(defaults, "translateImageKey", default: .translateImage)
         screenshotAction = ScreenshotAction(rawValue: defaults.string(forKey: "screenshotAction") ?? "") ?? .offer
         quickPasteModifier = ModifierKey(rawValue: defaults.string(forKey: "quickPasteModifier") ?? "") ?? .command
         plainTextModifier = ModifierKey(rawValue: defaults.string(forKey: "plainTextModifier") ?? "") ?? .shift
@@ -276,7 +272,7 @@ public final class AppSettings: ObservableObject {
         translationTargets = defaults.stringArray(forKey: "translationTargets") ?? Translator.defaultTargets
         translationService = TranslationService(rawValue: defaults.string(forKey: "translationService") ?? "") ?? .google
         translateSelection = defaults.object(forKey: "translateSelection") as? Bool ?? true
-        translateScreenText = defaults.bool(forKey: "translateScreenText")
+        translateScreenText = defaults.object(forKey: "translateScreenText") as? Bool ?? true
         saveTranslations = defaults.object(forKey: "saveTranslations") as? Bool ?? true
         saveImageTranslations = defaults.object(forKey: "saveImageTranslations") as? Bool ?? true
         microsoftRegion = defaults.string(forKey: "microsoftRegion") ?? ""
@@ -316,7 +312,6 @@ public final class AppSettings: ObservableObject {
         floatImageKey = .floatImage
         screenshotHotKey = .captureArea
         translateScreenHotKey = .translateScreen
-        translateImageKey = .translateImage
         translateHotKey = .translate
         quickPasteModifier = .command
         plainTextModifier = .shift

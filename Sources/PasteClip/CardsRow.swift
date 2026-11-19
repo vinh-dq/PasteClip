@@ -58,6 +58,7 @@ struct CardsRow: View {
             .equatable()
             .modifier(QuickPasteNumber(keys: state.heldKeys, index: index, symbol: settings.quickPasteModifier.symbol))
             .modifier(HoverLift())
+            .modifier(TranslateCorner(keys: state.heldKeys, item: item, action: { state.onTranslateClip(item) }, settings: settings))
             .modifier(SelectionRing(selection: selection, index: index, id: item.id,
                                     cardFrame: state.previewing ? state.cardFrame : nil))
             .id(item.id)
@@ -178,7 +179,7 @@ private struct CardMenu: View {
                 Button("Translate") { state.onTranslate(item, nil) }
                 if item.isImage {
                     Button("Translate on the Image") { state.onTranslateImages([item]) }
-                        .keyboardShortcut(settings.translateImageKey)
+                        .keyboardShortcut(settings.translateHotKey)
                 }
                 Divider()
                 ForEach(settings.translationTargets, id: \.self) { language in
@@ -297,6 +298,59 @@ private struct HoverLift: ViewModifier {
                 .animation(.spring(response: 0.28, dampingFraction: 0.75), value: hovering.value)
                 .onHover { hovering.value = $0 }
         }
+    }
+}
+
+/// The translate button itself: the translate glyph on glass that lifts, takes the accent colour and
+/// grows a little under the pointer, so it reads as a button.
+private struct TranslateGlyph: View {
+    let action: () -> Void
+    @StateObject private var hovering = ViewState(false)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "translate")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(hovering.value ? Color.white : Color.secondary)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Color.accentColor).opacity(hovering.value ? 1 : 0))
+                .contentShape(Circle())
+                .glassCircle()
+                .scaleEffect(hovering.value && !reduceMotion ? 1.12 : 1)
+                .shadow(color: Color.accentColor.opacity(hovering.value ? 0.35 : 0), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering.value = $0 }
+        .animation(.spring(response: 0.22, dampingFraction: 0.7), value: hovering.value)
+    }
+}
+
+/// A small translate button in the card's bottom-right corner, on hover, for whoever doesn't know the
+/// shortcut. The card knows what it holds, so there is nothing to look up: an image goes to the floating
+/// translation, text to the translation panel. The quick-paste number takes the corner while its modifier is held.
+private struct TranslateCorner: ViewModifier {
+    @ObservedObject var keys: HeldKeys
+    let item: ClipItem
+    let action: () -> Void
+    @ObservedObject var settings: AppSettings
+    @StateObject private var hovering = ViewState(false)
+
+    private var translatable: Bool { item.isImage || item.translatableText?.isEmpty == false }
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottomTrailing) {
+                if translatable {
+                    TranslateGlyph(action: action)
+                        .help("Translate" + (settings.translateHotKey.map { " (\($0.display))" } ?? ""))
+                    .padding(8)
+                    .opacity(hovering.value && !keys.quickPaste ? 1 : 0)
+                    .allowsHitTesting(hovering.value && !keys.quickPaste)
+                    .animation(.easeOut(duration: 0.15), value: hovering.value)
+                }
+            }
+            .onHover { hovering.value = $0 }
     }
 }
 

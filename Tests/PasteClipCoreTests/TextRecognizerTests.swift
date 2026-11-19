@@ -100,7 +100,7 @@ private func line(_ text: String, y: CGFloat, x: CGFloat = 0.1, width: CGFloat =
     let settings = AppSettings(defaults: defaults)
     #expect(settings.textLanguages == ["en-US", "vi-VT", "ja-JP", "zh-Hans"])
     #expect(settings.keepLineBreaks)
-    #expect(settings.captureTextHotKey?.display == "⌥⇧⌘2")
+    #expect(settings.captureTextHotKey?.display == "⌥Space")
     settings.textLanguages.append("ko-KR")
     #expect(AppSettings(defaults: defaults).textLanguages.last == "ko-KR")
 }

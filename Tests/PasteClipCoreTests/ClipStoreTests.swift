@@ -569,7 +569,7 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
     let reloaded = AppSettings(defaults: defaults)
     #expect(reloaded.shelfHotKey == nil)
     #expect(reloaded.historyLimit == 1000)
-    #expect(KeyCombo.openShelf.display == "⇧⌘V")
+    #expect(KeyCombo.openShelf.display == "⌃V")
 }
 
 // MARK: - Settings page helpers

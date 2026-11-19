@@ -229,7 +229,7 @@ private final class CannedResponses: URLProtocol {
     #expect(settings.translationTargets == ["vi", "en", "ja", "zh-Hans"])
     #expect(settings.translationService == .google)
     #expect(settings.translateHotKey?.display == "⌃Space")
-    #expect(settings.translateSelection && !settings.translateScreenText && settings.saveTranslations)
+    #expect(settings.translateSelection && settings.translateScreenText && settings.saveTranslations)
     #expect(settings.translationShowsOriginal)
     settings.translationService = .apple
     settings.translationTargets = ["en", "vi"]

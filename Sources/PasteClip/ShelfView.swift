@@ -122,6 +122,7 @@ final class ShelfState: ObservableObject {
     @Published var query = ClipQuery()
     @Published var focusToken = UUID()
     @Published var previewing = false
+    @Published var shortcutsShown = false
     @Published var editing = false
     /// Writing a new text clip.
     @Published var composing = false
@@ -157,6 +158,8 @@ final class ShelfState: ObservableObject {
     var onFloatImages: ([ClipItem]) -> Void = { _ in }
     /// Floats images with their text translated where it is.
     var onTranslateImages: ([ClipItem]) -> Void = { _ in }
+    /// The card's translate button: an image is translated where its text is, anything else in the translation panel.
+    var onTranslateClip: (ClipItem) -> Void = { _ in }
     private var subscriptions = Set<AnyCancellable>()
 
     init(store: ClipStore) {
@@ -347,6 +350,7 @@ struct ShelfView: View {
                     .help("Paste stack")
             }
             newBoardButton
+            shortcutsButton
             appearanceButton
             moreMenu
         }
@@ -437,6 +441,21 @@ struct ShelfView: View {
     /// While a pinboard popover is open, the shelf lets its keys through (Space, Return…).
     private func syncPinboardForm() {
         state.pinboardFormOpen = newBoardShown.value || editingBoard.value != nil || deletingBoard.value != nil
+    }
+
+    /// Every shortcut at once, as set in Settings; also ? in the shelf.
+    private var shortcutsButton: some View {
+        Button { state.shortcutsShown.toggle() } label: {
+            Image(systemName: "questionmark")
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+                .glassCircle()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Shortcuts (?)")
+        .modifier(Faint())
     }
 
     /// Light ↔ dark for all of PasteClip, the other way from how it looks now.

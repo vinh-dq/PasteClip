@@ -39,6 +39,7 @@ final class ShelfController {
     /// Gap between the floating shelf and the screen edges.
     private let margin: CGFloat = 10
     private let popup: PreviewPopupController
+    private let shortcutsSheet: ShortcutsSheetController
     private let toast = Toast()
     private let tone = GlowTone()
     private lazy var halo = GlowHalo(around: panel, kind: .panel, cornerRadius: 26, tone: tone)
@@ -61,6 +62,7 @@ final class ShelfController {
         self.settings = settings
         state = ShelfState(store: store)
         popup = PreviewPopupController(state: state, store: store, settings: settings)
+        shortcutsSheet = ShortcutsSheetController(settings: settings)
         state.onPaste = { [weak self] item, plain in self?.paste([item], plainText: plain) }
         state.onCopy = { [weak self] item in self?.copy([item]) }
         state.onPasteMany = { [weak self] items, plain in self?.paste(items, plainText: plain) }
@@ -72,6 +74,10 @@ final class ShelfController {
         state.onEditImage = { [weak self] item in self?.editImage(item) }
         state.onFloatImages = { [weak self] items in self?.floatImages(items) }
         state.onTranslateImages = { [weak self] items in self?.translateImages(items) }
+        state.onTranslateClip = { [weak self] item in
+            guard let self else { return }
+            if item.isImage { self.translateImages([item]) } else { self.state.onTranslate(item, nil) }
+        }
         state.onOpenSettings = { [weak self] in
             self?.hide()
             openSettings()
@@ -83,6 +89,10 @@ final class ShelfController {
     // MARK: - Preview popup
 
     private func observePreview() {
+        state.$shortcutsShown
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] shown in self?.updateShortcuts(shown) }
+            .store(in: &subscriptions)
         Publishers.CombineLatest3(state.$previewing, state.selectionModel.$index, state.cardFrame.$frame)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] previewing, _, frame in self?.updatePopup(previewing: previewing, cardFrame: frame) }
@@ -106,6 +116,12 @@ final class ShelfController {
                 self.state.closePreview()
             }
             .store(in: &subscriptions)
+    }
+
+    private func updateShortcuts(_ shown: Bool) {
+        guard shown, panel.isVisible else { return shortcutsSheet.hide() }
+        shortcutsSheet.show(over: panel, atTop: settings.shelfEdge == .top,
+                            sharingType: settings.hideDuringScreenSharing ? .none : .readOnly)
     }
 
     private func updatePopup(previewing: Bool, cardFrame: CGRect?) {
@@ -176,6 +192,7 @@ final class ShelfController {
         // progress is saved, as a click outside the popup saves it.
         state.commitEdit?()
         state.closePreview()
+        state.shortcutsShown = false
         popup.hide()
         hides += 1
         let hide = hides
@@ -220,14 +237,6 @@ final class ShelfController {
     /// For the float shortcut while the shelf is open.
     func floatSelection() { floatImages(state.selectedItems) }
 
-    /// The translate-image key (⌃⌥Space): the selected images, floated and translated where their text is.
-    private func translateImages(_ items: [ClipItem]) {
-        let images = items.filter(\.isImage)
-        guard !images.isEmpty else { return NSSound.beep() }
-        hide()
-        onTranslateImages(images)
-    }
-
     private func copy(_ items: [ClipItem]) {
         guard !items.isEmpty else { return }
         store.copyToPasteboard(items)
@@ -256,6 +265,17 @@ final class ShelfController {
 
     // MARK: - Keyboard
 
+    /// A click anywhere but the focused text field takes the focus off it, so Space and the arrow
+    /// keys work on the cards again instead of typing into the search.
+    private func dropSearchFocus(for event: NSEvent) {
+        guard let editor = panel.firstResponder as? NSTextView, let content = panel.contentView else { return }
+        let owner = (editor.delegate as? NSView) ?? editor
+        // `hitTest` takes the point in the superview's coordinates.
+        let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+        if let hit = content.hitTest(point), hit.isDescendant(of: owner) || hit.isDescendant(of: editor) { return }
+        panel.makeFirstResponder(nil)
+    }
+
     private func installMonitors() {
         removeMonitors()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -271,10 +291,12 @@ final class ShelfController {
         // Close the popup when the user clicks the shelf (or another card) outside it, keeping any edit.
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return event }
+            if self.state.shortcutsShown { self.state.shortcutsShown = false }
             if let window = event.window, !self.isShelf(window) {
                 self.hide()
                 return event
             }
+            if event.window === self.panel { self.dropSearchFocus(for: event) }
             guard self.state.previewing, event.window !== self.popup.panel else { return event }
             self.state.commitEdit?()
             self.state.closePreview()
@@ -342,6 +364,11 @@ final class ShelfController {
 
     /// Returns true when the key was handled and shouldn't reach the focused text field.
     private func handle(_ event: NSEvent) -> Bool {
+        // The shortcuts sheet closes on the next key (? included, which opened it).
+        if state.shortcutsShown, event.type == .keyDown, !event.modifierFlags.contains(.command) || event.keyCode == 53 {
+            state.shortcutsShown = false
+            return true
+        }
         // Naming a pinboard in its popover: every key is for its field and buttons.
         if state.pinboardFormOpen { return EditCommands.perform(event) }
         let typing = state.renamingID != nil || state.composing || state.textInputActive
@@ -405,10 +432,6 @@ final class ShelfController {
         // Let typing reach the title field or the text editor.
         if state.textInputActive { return false }
 
-        if matches(settings.translateImageKey, event) {
-            translateImages(state.selectedItem.map { [$0] } ?? [])
-            return true
-        }
         let chars = event.charactersIgnoringModifiers?.lowercased()
         switch event.keyCode {
         case 49: state.closePreview(); return true                    // Space
@@ -438,13 +461,23 @@ final class ShelfController {
         return !cmd
     }
 
-    /// For the translate shortcut while the shelf is open: closes it and hands over the selected
-    /// clips with text, or images, whose text is read if it hasn't been yet.
-    func translateSelection() {
-        let items = state.selectedItems.filter { $0.isImage || $0.translatableText?.isEmpty == false }
-        guard !items.isEmpty else { return NSSound.beep() }
+    /// The card menu's "Translate on the Image": the images, floated and translated where their text is.
+    private func translateImages(_ items: [ClipItem]) {
+        let images = items.filter(\.isImage)
+        guard !images.isEmpty else { return NSSound.beep() }
         hide()
-        onTranslateItems(items)
+        onTranslateImages(images)
+    }
+
+    /// For the translate shortcut while the shelf is open: closes it, translates the selected
+    /// images where their text is and hands the clips with text to the translation panel.
+    func translateSelection() {
+        let images = state.selectedItems.filter(\.isImage)
+        let texts = state.selectedItems.filter { !$0.isImage && $0.translatableText?.isEmpty == false }
+        guard !images.isEmpty || !texts.isEmpty else { return NSSound.beep() }
+        hide()
+        if !images.isEmpty { onTranslateImages(images) }
+        if !texts.isEmpty { onTranslateItems(texts) }
     }
 
     private func handleShelfKey(_ event: NSEvent) -> Bool {
@@ -455,7 +488,6 @@ final class ShelfController {
         if matches(settings.nextPinboardKey, event) { state.cycleBoard(1); return true }
         if matches(settings.previousPinboardKey, event) { state.cycleBoard(-1); return true }
         if matches(settings.floatImageKey, event) { floatImages(state.selectedItems); return true }
-        if matches(settings.translateImageKey, event) { translateImages(state.selectedItems); return true }
 
         // Quick paste: modifier + 1…9 (plus the plain-text modifier, if held).
         if let n = Self.digitKeys.firstIndex(of: event.keyCode), isHeld(settings.quickPasteModifier, in: event) {
@@ -474,7 +506,10 @@ final class ShelfController {
         case 123: state.move(-1); return true                         // ←
         case 124: state.move(1); return true                          // →
         case 48: state.cycleBoard(shift ? -1 : 1); return true        // Tab / ⇧Tab
-        case 49 where state.query.text.isEmpty:                       // Space with an empty search
+        case 44 where shift && !cmd && !(panel.firstResponder is NSText):  // ? with the search unfocused
+            state.shortcutsShown.toggle()
+            return true
+        case 49 where state.query.text.isEmpty || !(panel.firstResponder is NSText):  // Space, unless typing a search
             state.togglePreview()
             return true
         case 36, 76:                                                   // Return / Enter

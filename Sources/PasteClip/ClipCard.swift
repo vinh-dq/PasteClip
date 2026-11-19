@@ -346,7 +346,9 @@ struct ClipCard: View, Equatable {
         }
         .font(.system(size: 10.5, weight: .medium).monospacedDigit())
         .foregroundStyle(onPicture ? Color.white : Color.secondary)
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        // Room for the translate button in the corner.
+        .padding(.trailing, item.isImage || item.translatableText?.isEmpty == false ? 38 : 12)
         .padding(.vertical, 8)
         .background {
             if onPicture {

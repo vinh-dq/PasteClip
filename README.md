@@ -5,12 +5,12 @@
 A free, open-source clipboard manager for macOS, written in Swift (AppKit + SwiftUI).
 
 PasteClip keeps everything you copy (text, links, images, files, colours) and brings it back with
-one shortcut: press **⇧⌘V**, pick a card, and it is pasted into the app you were using.
+one shortcut: press **⌃V**, pick a card, and it is pasted into the app you were using.
 
 ## Highlights
 
 ### Your clipboard history, one shortcut away
-Press **⇧⌘V**: every recent clip slides in as a card, from text and links to images and colours.
+Press **⌃V**: every recent clip slides in as a card, from text and links to images and colours.
 Arrow through them, Space for a large preview, Tab through your pinboards, type to search,
 Return to paste.
 
@@ -49,7 +49,7 @@ work. Zoom, fade it, or let clicks pass through. Its text can be selected and co
 <img src="docs/media/float-live-text.jpg" width="600" alt="A poster floating on screen with a line of its text selected">
 
 ### Copy text from the screen, paste several things in order
-**⌥⇧⌘2** copies the text in any area of the screen, read on your Mac. The paste stack collects
+**⌥Space** copies the text in any area of the screen, read on your Mac. The paste stack collects
 what you copy and pastes it back one by one, in the same order.
 
 <table>
@@ -95,7 +95,7 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 ### Clipboard history
 
 - **History** of text, formatted text (RTF/HTML), links, colours, images and files, with the app each clip came from
-- **Shelf**: ⇧⌘V slides in a panel of cards from the bottom (or top) of the screen
+- **Shelf**: ⌃V slides in a panel of cards from the bottom (or top) of the screen
 - **Search** across text, titles, file paths, source apps and text found in images (Vision), plus filters by type, app and date
 - **Pinboards**: named, coloured collections for clips you want to keep
 - **Paste stack**: copy several things, then paste them one by one in the same order
@@ -112,7 +112,7 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T); any other key closes it and goes on to the app you're typing in
 - **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
 - **Float images**: ⌃F keeps an image above every window. Its text can be selected and copied (⌘C) with Live Text, as in Preview. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
-- **Copy text from the screen**: ⌥⇧⌘2, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
+- **Copy text from the screen**: ⌥Space, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
 
 ### Privacy and settings
 
@@ -149,14 +149,14 @@ shortcuts, so change any that get in the way.
 
 | Key | Action |
 |---|---|
-| ⇧⌘V | Open or close the shelf |
-| ⌃⌘C | Start or stop the paste stack |
-| ⌃⌘V | Paste the next clip from the stack |
+| ⌃V | Open or close the shelf |
+| ⌃⇧C | Start or stop the paste stack |
+| ⌃⇧V | Paste the next clip from the stack |
 | ⇧⌘1 | Screenshot of an area (or a window, with Space), saved as a clip and copied; a card in the corner offers Edit E, Float P, Translate T (Settings → General can instead always copy, edit or float) |
 | ⇧⌘2 | Translate an area of the screen: the translation floats over it, where the text was |
-| ⌥⇧⌘2 | Copy text from an area of the screen |
+| ⌥Space | Copy text from an area of the screen |
 | ⌃F | Float the latest image (with the shelf open: the selected images) |
-| ⌃Space | Translate the selected text, or the clipboard |
+| ⌃Space | Translate the selected text, or the clipboard: text opens the translation panel, an image is translated where its text is |
 
 ⌃Space is also macOS's shortcut for switching input sources. If that one is turned on
 (System Settings → Keyboard → Keyboard Shortcuts → Input Sources), macOS takes the key first:
@@ -221,9 +221,9 @@ These work with the pointer over the image, without clicking it first.
 | ⌃F | Float the selected images on the screen (configurable) |
 | ⌘C | Copy without pasting, and close (several cards: copied together; text selected in the search or the preview is copied as text) |
 | ⌘V ⌘X ⌘Z | Edit the search text |
-| ⌃Space (the translate shortcut) | Translate the selected clips: text, or the text in an image (read on the spot if it hasn't been yet) |
+| ⌃Space (the translate shortcut) | Translate the selected clips: text opens the translation panel, images are floated and translated where their text is |
 | ⌘I | Show only images (the Images button), or every type again |
-| ⌃⌥Space | Float the selected images, translated where their text is (configurable) |
+| ? | List every shortcut, as set now (also the ? button in the shelf header) |
 | ⌘⌫ | Delete (every selected card) |
 | ⌘→ / ⌘← or Tab / ⇧Tab | Next / previous pinboard |
 | ⌘N | New text item (Esc saves, ⌥Esc discards) |
