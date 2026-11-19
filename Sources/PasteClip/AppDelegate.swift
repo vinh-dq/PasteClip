@@ -72,11 +72,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Lets you jump straight to a screen while working on the UI:
-    /// `PasteClip --open shelf|preview|editor|float|general|text|translation|privacy|shortcuts`, or `--translate "some text"`.
+    /// `PasteClip --open shelf|preview|editor|float|general|text|translation|privacy|shortcuts`, `--translate "some text"`,
+    /// or `--translate-image path/to/image.png` (floated, translated where its text is).
     private func openFromArguments() {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--translate"), args.indices.contains(i + 1) {
             translation.show(args[i + 1])
+            return
+        }
+        if let i = args.firstIndex(of: "--translate-image"), args.indices.contains(i + 1),
+           let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[i + 1]) as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            floatingImages.showTranslated(image, over: nil)
             return
         }
         guard let i = args.firstIndex(of: "--open"), args.indices.contains(i + 1) else { return }
@@ -129,6 +136,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .debounce(for: .milliseconds(10), scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.registerHotKeys() }
             .store(in: &subscriptions)
+
+        // Light or dark for every PasteClip window; `--appearance` (for checking the look) wins.
+        if !CommandLine.arguments.contains("--appearance") {
+            settings.$appearance
+                .sink { appearance in
+                    switch appearance {
+                    case .system: NSApp.appearance = nil
+                    case .light: NSApp.appearance = NSAppearance(named: .aqua)
+                    case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+                    }
+                }
+                .store(in: &subscriptions)
+        }
 
         store.$stackMode
             .removeDuplicates()
@@ -318,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear clipboard history?"
-        alert.informativeText = "Pinned clips and clips on a pinboard are kept."
+        alert.informativeText = "Clips on a pinboard are kept."
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()

@@ -112,8 +112,10 @@ public enum TextRecognizer {
                 lock.withLock { failed = true }
             }
             let lines = (observations ?? []).compactMap { observation -> Line? in
-                guard let text = observation.topCandidates(1).first?.string else { return nil }
-                return Line(text: text, box: observation.boundingBox, script: script)
+                guard let candidate = observation.topCandidates(1).first else { return nil }
+                return Line(text: candidate.string, box: observation.boundingBox, script: script,
+                            quad: [observation.topLeft, observation.topRight, observation.bottomRight, observation.bottomLeft],
+                            confidence: candidate.confidence)
             }
             lock.withLock { passes[i] = lines }
         }
@@ -126,6 +128,39 @@ public enum TextRecognizer {
         }
         failureLock.withLock { lastRunFailed = failed }
         return failed ? [] : merge(passes)
+    }
+
+    /// Where the paragraphs, list items and table cells of `image` are (Vision's boxes, the origin
+    /// at the bottom left), as macOS 26's document reader lays the page out: lines in different
+    /// ones are never one paragraph, which keeps columns and cells apart. Empty before macOS 26
+    /// or when it can't tell.
+    public static func layout(in image: CGImage) async -> [CGRect] {
+        guard #available(macOS 26, *),
+              let document = try? await RecognizeDocumentsRequest().perform(on: image).first?.document
+        else { return [] }
+        // Vision works out these parts on reading them, recursing deeply on a busy page, more
+        // than a task's small stack holds (it crashed there): they're read on a thread with a
+        // large one. A list item or a table cell counts as one region, without looking inside.
+        return await withCheckedContinuation { done in
+            let thread = Thread {
+                func box(_ region: NormalizedRegion) -> CGRect {
+                    let b = region.boundingBox
+                    return CGRect(origin: b.origin, size: CGSize(width: b.width, height: b.height))
+                }
+                var found = document.paragraphs.map { box($0.boundingRegion) }
+                for list in document.lists {
+                    for item in list.items { found.append(box(item.content.boundingRegion)) }
+                }
+                for table in document.tables {
+                    for row in table.rows {
+                        for cell in row { found.append(box(cell.content.boundingRegion)) }
+                    }
+                }
+                done.resume(returning: found)
+            }
+            thread.stackSize = 64 << 20
+            thread.start()
+        }
     }
 
     private static func perform(_ level: VNRequestTextRecognitionLevel, languages: [String],
@@ -173,6 +208,11 @@ public enum TextRecognizer {
         public var text: String
         public var box: CGRect
         var script: Script
+        /// Its corners as Vision gives them (top left, top right, bottom right, bottom left of the
+        /// text, the origin at the bottom left), which show how far it's turned; empty when unknown.
+        public var quad: [CGPoint] = []
+        /// How sure Vision is of the reading, 0–1.
+        public var confidence: Float = 1
 
         /// Chinese or Japanese, which is written without spaces between words.
         public var isHanOrKana: Bool { script == .hanAndKana }
@@ -238,6 +278,8 @@ public enum TextRecognizer {
                 let latin = overlapping.filter { result[$0].script == .latin }.map { result[$0].text }
                 merged.text = restoringAccents(in: line.text, from: latin.joined(separator: " "))
                 merged.box = overlapping.reduce(line.box) { $0.union(result[$1].box) }
+                // The corners stay this pass's own: which way the line runs (bottom up for a
+                // column of vertical writing) is what they tell.
                 for j in overlapping.reversed() { result.remove(at: j) }
                 result.append(merged)
             }

@@ -32,13 +32,15 @@ final class PopupGeometry: ObservableObject {
 final class PreviewPopupController {
     let panel = PreviewPanel()
     private let geometry = PopupGeometry()
+    private let tone = GlowTone()
+    private lazy var halo = GlowHalo(around: panel, kind: .panel, cornerRadius: 22, tone: tone)
     private let store: ClipStore
     static let arrowHeight: CGFloat = 10
 
     init(state: ShelfState, store: ClipStore, settings: AppSettings) {
         self.store = store
         panel.contentView = HostingView(rootView: PreviewPopup(state: state, selection: state.selectionModel,
-                                                                 store: store, settings: settings, geometry: geometry))
+                                                                 store: store, settings: settings, tone: tone, geometry: geometry))
     }
 
     var isKey: Bool { panel.isKeyWindow }
@@ -74,10 +76,15 @@ final class PreviewPopupController {
         }
         if panel.parent == nil { shelf.addChildWindow(panel, ordered: .above) }
         panel.orderFront(nil)
+        // Around the glass only, not the arrow's room.
+        halo.insets = geometry.pointsDown ? NSEdgeInsets(top: 0, left: 0, bottom: Self.arrowHeight, right: 0)
+                                          : NSEdgeInsets(top: Self.arrowHeight, left: 0, bottom: 0, right: 0)
+        halo.syncVisibility()
     }
 
     /// Header, footer, arrow and the margins around the sheet the clip sits on.
-    private static let chrome = CGSize(width: 20, height: 48 + 30 + arrowHeight + 20)
+    /// Header, the margin under the sheet, the arrow and the edges. The footer is over the sheet.
+    private static let chrome = CGSize(width: 20, height: 48 + 10 + arrowHeight + 20)
     private static let minWidth: CGFloat = 460
 
     /// Full width for text and documents; for pictures, just wide enough to show the whole
@@ -87,11 +94,11 @@ final class PreviewPopupController {
         let full = NSSize(width: min(980, bounds.width - 40), height: min(430, bounds.height * 0.55))
         if item.kind == .text { return textSize(for: item, max: full) }
         // A colour needs only room for its swatch and code.
-        if item.kind == .color { return NSSize(width: Self.minWidth, height: 250) }
+        if item.kind == .color { return NSSize(width: Self.minWidth, height: 220) }
         if item.kind == .link {
             // Just the site, the title and the link, with the page's picture beside them when it has one.
             let picture = LinkPreviews.shared.preview(for: item.text ?? "")?.image.map(PreviewCard.isSharp) ?? false
-            return NSSize(width: min(picture ? 680 : 560, full.width), height: picture ? 300 : 230)
+            return NSSize(width: min(picture ? 680 : 560, full.width), height: picture ? 270 : 200)
         }
         guard let pixels = imagePixelSize(of: item), pixels.width > 0, pixels.height > 0 else { return full }
         let points = CGSize(width: pixels.width / screen.backingScaleFactor,
@@ -100,7 +107,7 @@ final class PreviewPopupController {
         let scale = min(1, maxImage.width / points.width, maxImage.height / points.height)
         let image = CGSize(width: points.width * scale, height: points.height * scale)
         return NSSize(width: max(Self.minWidth, image.width + Self.chrome.width),
-                      height: max(260, image.height + Self.chrome.height))
+                      height: max(230, image.height + Self.chrome.height))
     }
 
     /// Measured text sizes, so moving the popup while the shelf scrolls doesn't re-lay out the text.
@@ -121,7 +128,7 @@ final class PreviewPopupController {
         let bounds = text.boundingRect(with: NSSize(width: full.width - inset.width, height: .greatestFiniteMagnitude),
                                        options: [.usesLineFragmentOrigin, .usesFontLeading])
         let size = NSSize(width: min(full.width, max(Self.minWidth, ceil(bounds.width) + inset.width)),
-                          height: min(full.height, max(220, ceil(bounds.height) + inset.height + Self.chrome.height)))
+                          height: min(full.height, max(150, ceil(bounds.height) + inset.height + Self.chrome.height)))
         textSizes[item.id] = (key, size)
         return size
     }
@@ -142,6 +149,7 @@ struct PreviewPopup: View {
     @ObservedObject var selection: SelectionModel
     @ObservedObject var store: ClipStore
     let settings: AppSettings
+    let tone: GlowTone
     @ObservedObject var geometry: PopupGeometry
 
     var body: some View {
@@ -156,6 +164,7 @@ struct PreviewPopup: View {
                     Color.clear
                 }
             }
+            .lightRim(cornerRadius: 22, tone: tone)
             .background(GlassBackground(cornerRadius: 22))
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .glassEdge(cornerRadius: 22)
@@ -207,17 +216,22 @@ private struct PreviewCard: View {
             header
             // The clip on a sheet of its own, like its card; ringed while it's being edited.
             content
+                // While editing, the footer's counts stay up; the text keeps clear of them.
+                .padding(.bottom, state.editing ? 26 : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Softer than plain white: a little of the glass shows through.
                 .background(Color(nsColor: .textBackgroundColor).opacity(0.72))
+                // The small print sits over the sheet's bottom edge, so it takes no room of its own
+                // while it's hidden.
+                .overlay(alignment: .bottom) { footer }
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(state.editing ? Color.accentColor : Color.primary.opacity(0.07),
                                   lineWidth: state.editing ? 2 : 0.5))
                 .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
                 .padding(.horizontal, 10)
+                .padding(.bottom, 10)
                 .animation(.easeOut(duration: 0.15), value: state.editing)
-            footer
         }
         .onHover { hovering.value = $0 }
         .onAppear {
@@ -296,8 +310,6 @@ private struct PreviewCard: View {
                         state.onTranslate(item, nil)
                     }
                 }
-                CapsuleButton(symbol: item.pinned ? "pin.slash" : "pin", key: "⌘P",
-                              help: item.pinned ? "Unpin (⌘P)" : "Pin, so it's kept (⌘P)") { store.togglePin(item) }
                 if item.kind == .link, let url = URL(string: item.text ?? "") {
                     CapsuleButton(symbol: "safari", help: "Open in Browser") { NSWorkspace.shared.open(url) }
                 }
@@ -593,8 +605,12 @@ private struct PreviewCard: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .frame(height: 30)
+        // Faded into the sheet, so it reads over text or a picture.
+        .background(LinearGradient(colors: [Color(nsColor: .textBackgroundColor).opacity(0),
+                                            Color(nsColor: .textBackgroundColor).opacity(0.92)],
+                                   startPoint: .top, endPoint: .bottom))
         // Small print, shown while the pointer is over the popup (or while editing, for the counts).
         .opacity(hovering.value || state.editing ? 1 : 0)
         .animation(.easeOut(duration: 0.15), value: hovering.value)

@@ -41,8 +41,8 @@ public struct KeyCombo: Codable, Equatable {
     public static let captureArea = KeyCombo(keyCode: 18, modifiers: command | shift, keyName: "1")
     // Space = 49. Only active while the shelf is open, where ⌃Space translates text.
     public static let translateImage = KeyCombo(keyCode: 49, modifiers: control | option, keyName: "Space")
-    // P = 35. Floats the latest image, or the ones selected in the shelf.
-    public static let floatImage = KeyCombo(keyCode: 35, modifiers: command | option, keyName: "P")
+    // F = 3. Floats the latest image, or the ones selected in the shelf. It was ⌥⌘P before.
+    public static let floatImage = KeyCombo(keyCode: 3, modifiers: control, keyName: "F")
 
     /// Whether macOS has this shortcut turned on for itself (System Settings → Keyboard → Keyboard
     /// Shortcuts), such as ⌃Space for switching input sources. macOS gets the key first then.
@@ -143,6 +143,19 @@ public enum ShelfEdge: String, CaseIterable, Identifiable {
     public var title: String { self == .bottom ? "Bottom of screen" : "Top of screen" }
 }
 
+/// Light or dark for PasteClip's own windows, or as the system is.
+public enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .system: return "As the system"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+}
+
 /// User preferences, saved in UserDefaults as they change.
 public final class AppSettings: ObservableObject {
     private let defaults: UserDefaults
@@ -153,6 +166,7 @@ public final class AppSettings: ObservableObject {
     @Published public var excludedBundleIDs: [String] { didSet { defaults.set(excludedBundleIDs, forKey: "excludedBundleIDs") } }
     @Published public var playSounds: Bool { didSet { defaults.set(playSounds, forKey: "playSounds") } }
     @Published public var shelfEdge: ShelfEdge { didSet { defaults.set(shelfEdge.rawValue, forKey: "shelfEdge") } }
+    @Published public var appearance: AppAppearance { didSet { defaults.set(appearance.rawValue, forKey: "appearance") } }
     @Published public var shelfHotKey: KeyCombo? { didSet { store(shelfHotKey, "shelfHotKey") } }
     @Published public var stackHotKey: KeyCombo? { didSet { store(stackHotKey, "stackHotKey") } }
     @Published public var pasteNextHotKey: KeyCombo? { didSet { store(pasteNextHotKey, "pasteNextHotKey") } }
@@ -235,6 +249,7 @@ public final class AppSettings: ObservableObject {
         excludedBundleIDs = defaults.stringArray(forKey: "excludedBundleIDs") ?? Self.defaultExcluded
         playSounds = defaults.object(forKey: "playSounds") as? Bool ?? false
         shelfEdge = ShelfEdge(rawValue: defaults.string(forKey: "shelfEdge") ?? "") ?? .bottom
+        appearance = AppAppearance(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system
         shelfHotKey = Self.load(defaults, "shelfHotKey", default: .openShelf)
         stackHotKey = Self.load(defaults, "stackHotKey", default: .toggleStack)
         pasteNextHotKey = Self.load(defaults, "pasteNextHotKey", default: .pasteNext)
@@ -281,6 +296,13 @@ public final class AppSettings: ObservableObject {
                 floatImageKey = .floatImage
             }
             defaults.set(true, forKey: "floatImageKeyMoved")
+        }
+        // Then ⌥⌘P; a key kept as that moves to ⌃F once.
+        if !defaults.bool(forKey: "floatImageKeyMovedToControlF") {
+            if floatImageKey == KeyCombo(keyCode: 35, modifiers: KeyCombo.command | KeyCombo.option, keyName: "P") {
+                floatImageKey = .floatImage
+            }
+            defaults.set(true, forKey: "floatImageKeyMovedToControlF")
         }
     }
 

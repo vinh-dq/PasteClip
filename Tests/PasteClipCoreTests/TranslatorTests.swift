@@ -86,7 +86,9 @@ import Testing
     #expect(WebTranslator(service: .deepL, key: "abc").request(for: "x", to: "vi").url?.host == "api.deepl.com")
 
     let cloud = WebTranslator(service: .googleCloud, key: "K").request(for: "x", to: "ja")
-    #expect(cloud.url?.query?.contains("key=K") == true)
+    // In a header, never in the address.
+    #expect(cloud.value(forHTTPHeaderField: "X-goog-api-key") == "K")
+    #expect(cloud.url?.query == nil)
 
     let microsoft = WebTranslator(service: .microsoft, key: "K", region: "southeastasia").request(for: "x", to: "vi")
     #expect(microsoft.value(forHTTPHeaderField: "Ocp-Apim-Subscription-Key") == "K")
@@ -340,4 +342,12 @@ private let bingPage = """
         CannedResponses.responses = [(401, ""), (200, bingPage), (401, "")]
         await #expect(throws: TranslationFailure.limited) { try await bing.translate("Hello", to: "vi") }
     }
+}
+
+@Test func translationsKeepTheOriginalsLineBreaks() {
+    let original = "First line\nSecond line\nThird line"
+    #expect(Translator.keepingLineBreaks(of: original, in: "Một\n\nHai\n\nBa") == "Một\nHai\nBa")
+    // A blank line in the original is kept, and so is a translation that already matches.
+    #expect(Translator.keepingLineBreaks(of: "A\n\nB", in: "Một\n\nHai") == "Một\n\nHai")
+    #expect(Translator.keepingLineBreaks(of: original, in: "Một\nHai\nBa") == "Một\nHai\nBa")
 }

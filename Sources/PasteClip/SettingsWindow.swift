@@ -163,7 +163,7 @@ private struct GeneralPage: View {
                     ForEach(AppSettings.historyLimits, id: \.self) { Text("\($0) clips").tag($0) }
                 }
                 HStack {
-                    Text("Pinned clips and pinboards are always kept.")
+                    Text("Clips on a pinboard are always kept.")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Erase History…", action: eraseHistory)
@@ -173,6 +173,9 @@ private struct GeneralPage: View {
             Section("Shelf") {
                 Picker("Show at", selection: $settings.shelfEdge) {
                     ForEach(ShelfEdge.allCases) { Text($0.title).tag($0) }
+                }
+                Picker("Appearance", selection: $settings.appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.title).tag($0) }
                 }
             }
         }
@@ -190,7 +193,7 @@ private struct GeneralPage: View {
     private func eraseHistory() {
         let alert = NSAlert()
         alert.messageText = "Erase clipboard history?"
-        alert.informativeText = "Pinned clips and clips on a pinboard are kept. This can't be undone."
+        alert.informativeText = "Clips on a pinboard are kept. This can't be undone."
         alert.addButton(withTitle: "Erase")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn { store.clearHistory() }
@@ -358,7 +361,7 @@ private struct TranslationPage: View {
                 }
             } footer: {
                 Text("In a translation, 1–\(min(settings.translationTargets.count, 9)) picks the language, ↑ ↓ the service, Return copies, "
-                     + "⌘Return pastes into the app, ⌘S saves to history, Esc closes. With the shelf open, the shortcut translates the selected clips.")
+                     + "⌘Return pastes into the app, Esc closes. With the shelf open, the shortcut translates the selected clips.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

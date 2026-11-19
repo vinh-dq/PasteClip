@@ -103,8 +103,7 @@ struct CapsuleButton: View {
             .foregroundStyle(prominent ? Color.white : Color.primary)
             .padding(.horizontal, title == nil ? 8 : 11)
             .frame(maxWidth: expands ? .infinity : nil, minHeight: 28, maxHeight: 28)
-            .background(Capsule().fill(prominent ? Color.accentColor.opacity(hovering.value && isEnabled ? 0.85 : 1)
-                                                 : Color.primary.opacity(hovering.value && isEnabled ? 0.11 : 0.06)))
+            .background(CapsuleFill(prominent: prominent, hovering: hovering.value && isEnabled))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -113,6 +112,30 @@ struct CapsuleButton: View {
         .opacity(isEnabled ? 1 : 0.45)
         .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hovering.value = inside } }
         .help(help ?? [title, key.map { "(\($0))" }].compactMap { $0 }.joined(separator: " "))
+    }
+}
+
+/// The fill of a capsule button or chip, lit like the panels: on a light screen a frosted white
+/// pill with a faint shadow, on a dark one a soft light fill. A prominent one is the accent colour
+/// with a glow of it, like a lit key.
+struct CapsuleFill: View {
+    var prominent = false
+    var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        if prominent {
+            Capsule().fill(Color.accentColor.opacity(hovering ? 0.88 : 1))
+                .shadow(color: Color.accentColor.opacity(0.35), radius: 4, y: 2)
+        } else if colorScheme == .dark {
+            Capsule().fill(Color.white.opacity(hovering ? 0.14 : 0.08))
+                // A line of light along the top, as on the panels.
+                .overlay(Capsule().strokeBorder(LinearGradient(colors: [.white.opacity(0.12), .clear], startPoint: .top, endPoint: .center), lineWidth: 1))
+        } else {
+            Capsule().fill(Color.white.opacity(hovering ? 0.85 : 0.62))
+                .overlay(Capsule().strokeBorder(LinearGradient(colors: [.white.opacity(0.9), .clear], startPoint: .top, endPoint: .center), lineWidth: 1))
+                .shadow(color: Color(red: 0.08, green: 0.08, blue: 0.16).opacity(0.08), radius: 1, y: 1)
+        }
     }
 }
 

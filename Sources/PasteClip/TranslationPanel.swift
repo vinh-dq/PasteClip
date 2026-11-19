@@ -16,6 +16,8 @@ final class TranslationController {
     private let panel = TranslationPanel()
     private let hosting: NSHostingView<TranslationView>
     private let toast = Toast()
+    private let tone = GlowTone()
+    private lazy var halo = GlowHalo(around: panel, kind: .panel, cornerRadius: TranslationView.cornerRadius, tone: tone)
     private var keyMonitor: Any?
     private var clickMonitor: Any?
     private var subscriptions = Set<AnyCancellable>()
@@ -34,7 +36,7 @@ final class TranslationController {
         self.settings = settings
         self.keys = keys
         model = TranslationModel(settings: settings, keys: keys)
-        hosting = NSHostingView(rootView: TranslationView(model: model, settings: settings, keys: keys))
+        hosting = NSHostingView(rootView: TranslationView(model: model, settings: settings, keys: keys, tone: tone))
         // Clipped to the glass's rounded corners, so nothing square shows behind them and the
         // window's shadow takes the same shape.
         hosting.wantsLayer = true
@@ -44,7 +46,6 @@ final class TranslationController {
         panel.contentView = hosting
         hosting.rootView.onCopy = { [weak self] in self?.copy() }
         hosting.rootView.onPaste = { [weak self] in self?.paste() }
-        hosting.rootView.onSave = { [weak self] in self?.save() }
         hosting.rootView.onShowOnImage = { [weak self] in self?.showOnImage() }
         hosting.rootView.onDownload = { [weak self] source, target in self?.download(source, target) }
         // Once dragged, the panel stays where it was put, growing downwards from there.
@@ -98,6 +99,7 @@ final class TranslationController {
         model.start(text, target: target)
         if !placed { position() }
         panel.makeKeyAndOrderFront(nil)
+        halo.syncVisibility()
         installMonitors()
         fit()
     }
@@ -141,6 +143,7 @@ final class TranslationController {
         model.wait()
         position()
         panel.orderFrontRegardless()
+        halo.syncVisibility()
     }
 
     private func position() {
@@ -293,11 +296,6 @@ final class TranslationController {
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func save() {
-        guard let text = model.translation else { return NSSound.beep() }
-        if store.addText(text, source: "Translation") != nil { model.saved = true }
-    }
-
     // MARK: - Keyboard
 
     private func installMonitors() {
@@ -346,7 +344,6 @@ final class TranslationController {
             if EditCommands.perform(event) { return true }
             guard flags == .command else { return false }                     // Everything else is typing.
             switch key {
-            case "s": save(); return true
             case "w": hide(); return true
             default: return false
             }
@@ -374,7 +371,6 @@ final class TranslationController {
         guard flags == .command else { return false }
         switch key {
         case "c": copy(); hide(); return true
-        case "s": save(); return true
         case "o": model.showsOriginal.toggle(); return true
         case "w": hide(); return true
         case "i": showOnImage(); return true
@@ -440,7 +436,6 @@ final class TranslationModel: ObservableObject {
     }
     /// The text was longer than `Translator.maxLength` and only its start is translated.
     @Published private(set) var shortened = false
-    @Published var saved = false
     /// The text was read from an image, which can show the translation in place.
     @Published var fromImage = false
     /// Language pairs ("ja>vi") whose download was asked for in this session. Asking macOS again
@@ -606,7 +601,6 @@ final class TranslationModel: ObservableObject {
         downloadWatch?.cancel()
         task?.cancel()
         generation += 1
-        saved = false
         if let cached = cache[cacheKey] { return phase = .done(cached) }
         phase = .working
         if service == .apple { return runApple() }
@@ -712,7 +706,7 @@ final class TranslationModel: ObservableObject {
                     continue
                 }
                 let response = try await session.translate(chunk)
-                parts.append(response.targetText)
+                parts.append(Translator.keepingLineBreaks(of: chunk, in: response.targetText))
                 source = source ?? Translator.normalized(response.sourceLanguage.minimalIdentifier)
             }
             finish(TranslationResult(text: parts.joined(separator: "\n"), source: source), generation)
@@ -853,9 +847,9 @@ struct TranslationView: View {
     @ObservedObject var model: TranslationModel
     @ObservedObject var settings: AppSettings
     @ObservedObject var keys: APIKeys
+    @ObservedObject var tone: GlowTone
     var onCopy: () -> Void = {}
     var onPaste: () -> Void = {}
-    var onSave: () -> Void = {}
     var onShowOnImage: () -> Void = {}
     var onDownload: (String, String) -> Void = { _, _ in }
     @StateObject private var hoveringText = ViewState(false)
@@ -879,6 +873,7 @@ struct TranslationView: View {
             .help("Drag to move")
         }
         .background(WindowDragArea())
+        .lightRim(cornerRadius: Self.cornerRadius, tone: tone)
         .background(GlassBackground(cornerRadius: Self.cornerRadius))
         .translationTask(model.appleConfiguration) { session in
             await model.translate(with: session)
@@ -901,7 +896,7 @@ struct TranslationView: View {
                 Image(systemName: "arrow.left.arrow.right")
                     .font(.system(size: 10, weight: .semibold))
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.primary.opacity(0.06)))
+                    .background(CapsuleFill())
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -971,7 +966,7 @@ struct TranslationView: View {
             // Brighter while editing, the sheet text is written on elsewhere in the app.
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(model.editing ? Color(nsColor: .textBackgroundColor).opacity(0.72)
-                      : Color.primary.opacity(hoveringText.value ? 0.07 : 0.045)))
+                      : Color.black.opacity(tone.light ? (hoveringText.value ? 0.075 : 0.05) : (hoveringText.value ? 0.24 : 0.18))))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.accentColor.opacity(model.editing ? 0.85 : 0), lineWidth: 1.5))
             .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hoveringText.value = inside } }
@@ -1082,7 +1077,6 @@ struct TranslationView: View {
                               help: "Float the image with the translation where its text is (⌘I)", action: onShowOnImage)
             }
             Group {
-                CapsuleButton(symbol: model.saved ? "checkmark" : "tray.and.arrow.down", help: "Save to history (⌘S)", action: onSave)
                 CapsuleButton(title: "Copy", key: model.editing ? nil : "↩", help: "Copy the translation (Return)", action: onCopy)
                 CapsuleButton(title: "Paste", key: "⌘↩", prominent: true, help: "Paste into the app (⌘Return)", action: onPaste)
             }
@@ -1107,7 +1101,7 @@ private struct LanguageChip: View {
             .foregroundStyle(selected ? Color.white : Color.primary)
             .padding(.horizontal, 9)
             .frame(height: 24)
-            .background(Capsule().fill(selected ? Color.accentColor : Color.primary.opacity(0.06)))
+            .background(CapsuleFill(prominent: selected))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

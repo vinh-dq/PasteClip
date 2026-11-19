@@ -9,36 +9,90 @@ public struct TextBlock: Equatable {
     /// Height of one of its lines.
     public var lineHeight: CGFloat
     public var lineCount: Int
+    /// How far it's turned clockwise, in radians, about the middle of `rect` (which is then the
+    /// box along its lines, not the one it covers on the image: see `bounds`).
+    public var angle: CGFloat
+    /// Chinese or Japanese written in columns: `lineCount` columns, read from the right,
+    /// `lineHeight` wide.
+    public var vertical: Bool
 
-    public init(text: String, rect: CGRect, lineHeight: CGFloat, lineCount: Int) {
+    public init(text: String, rect: CGRect, lineHeight: CGFloat, lineCount: Int, angle: CGFloat = 0, vertical: Bool = false) {
         self.text = text
         self.rect = rect
         self.lineHeight = lineHeight
         self.lineCount = lineCount
+        self.angle = angle
+        self.vertical = vertical
+    }
+
+    /// The box it covers on the image.
+    public var bounds: CGRect {
+        guard angle != 0 else { return rect }
+        return rect.applying(CGAffineTransform(translationX: rect.midX, y: rect.midY).rotated(by: angle)
+            .translatedBy(x: -rect.midX, y: -rect.midY))
     }
 }
 
 /// Puts a translation on an image where its text was: the lines Vision found become paragraphs,
-/// each is covered with the colour around it and its translation is written in its place.
+/// their letters are taken out (what's behind them stays) and the translation is written in
+/// their place, turned or in columns as the original was.
 public enum ImageTranslation {
     // MARK: Paragraphs
+
+    /// Lines Vision is less sure of than this are left as they are: what it reads in a logo, a
+    /// pattern or a photo's texture.
+    static let minimumConfidence: Float = 0.3
 
     /// Lines joined into the paragraphs they belong to, top to bottom. A line joins the one above
     /// it when it's the same size, starts in line with it, follows closely, and the line above
     /// ran on to its end (a full line that doesn't finish a sentence) and this one carries on (in
-    /// lower case); labels, menu items and list entries stay on their own.
-    public static func blocks(from lines: [TextRecognizer.Line], size: CGSize) -> [TextBlock] {
+    /// lower case); labels, menu items and list entries stay on their own. `regions` (Vision's
+    /// paragraphs, list items and table cells, see `TextRecognizer.layout`) settle it where they
+    /// cover the lines: lines in different ones stay apart, lines in one join more readily.
+    /// Turned lines stay on their own; columns of vertical Chinese or Japanese side by side
+    /// become one block, read from the right.
+    public static func blocks(from lines: [TextRecognizer.Line], size: CGSize, regions: [CGRect] = []) -> [TextBlock] {
         struct Row {
             var text: String
             var rect: CGRect
             var closeSet: Bool
+            var region: Int?
+            var angle: CGFloat = 0
+            var vertical = false
         }
-        let rows = lines.map { line -> Row in
-            let b = line.box
-            return Row(text: line.text.trimmingCharacters(in: .whitespaces),
-                       rect: CGRect(x: b.minX * size.width, y: (1 - b.maxY) * size.height,
-                                    width: b.width * size.width, height: b.height * size.height),
-                       closeSet: line.isHanOrKana)
+        func pixels(_ box: CGRect) -> CGRect {
+            CGRect(x: box.minX * size.width, y: (1 - box.maxY) * size.height, width: box.width * size.width, height: box.height * size.height)
+        }
+        let areas = regions.map(pixels)
+        let rows = lines.filter { $0.confidence >= minimumConfidence }.map { line -> Row in
+            var row = Row(text: line.text.trimmingCharacters(in: .whitespaces), rect: pixels(line.box), closeSet: line.isHanOrKana)
+            // The smallest region it's in: a cell rather than the table around it.
+            row.region = areas.indices.filter { areas[$0].contains(CGPoint(x: row.rect.midX, y: row.rect.midY)) }
+                .min { areas[$0].width * areas[$0].height < areas[$1].width * areas[$1].height }
+            if line.isHanOrKana, row.rect.height > row.rect.width * 1.8, row.text.count >= 2 {
+                row.vertical = true
+                // Vision reads a column as a line turned a quarter to the left, from the bottom
+                // up, and takes the long-vowel mark standing upright in it for an I or a 1. The
+                // mark only ever follows kana; a digit after a kanji ("第1章") is a digit.
+                if line.quad.count == 4, line.quad[1].y > line.quad[0].y {
+                    row.text = String(row.text.reversed())
+                }
+                var fixed = Array(row.text)
+                for i in fixed.indices.dropFirst() where "Il|1".contains(fixed[i]) {
+                    if fixed[i - 1].unicodeScalars.allSatisfy({ (0x3041...0x30FF).contains($0.value) }) { fixed[i] = "ー" }
+                }
+                row.text = String(fixed)
+            } else if line.quad.count == 4 {
+                let p = line.quad.map { CGPoint(x: $0.x * size.width, y: (1 - $0.y) * size.height) }
+                let angle = atan2(p[1].y - p[0].y, p[1].x - p[0].x)
+                if abs(angle) > 0.05 {
+                    let width = hypot(p[1].x - p[0].x, p[1].y - p[0].y), height = hypot(p[3].x - p[0].x, p[3].y - p[0].y)
+                    let centre = CGPoint(x: p.map(\.x).reduce(0, +) / 4, y: p.map(\.y).reduce(0, +) / 4)
+                    row.rect = CGRect(x: centre.x - width / 2, y: centre.y - height / 2, width: width, height: height)
+                    row.angle = angle
+                }
+            }
+            return row
         }
         .filter { !$0.text.isEmpty }
         .sorted { ($0.rect.minY, $0.rect.minX) < ($1.rect.minY, $1.rect.minX) }
@@ -46,12 +100,23 @@ public enum ImageTranslation {
         var groups: [[Row]] = []
         for row in rows {
             let joins: ([Row]) -> Bool = { group in
-                guard let last = group.last else { return false }
+                guard let last = group.last, row.angle == 0, last.angle == 0, row.vertical == last.vertical else { return false }
+                if let a = row.region, let b = last.region, a != b { return false }
+                if row.vertical {
+                    // The next column along: as wide, beside the others, overlapping them down the page.
+                    let union = group.dropFirst().reduce(group[0].rect) { $0.union($1.rect) }
+                    let w = last.rect.width
+                    let apart = max(row.rect.minX - union.maxX, union.minX - row.rect.maxX)
+                    return max(w, row.rect.width) / max(min(w, row.rect.width), 1) <= 1.4 && apart < w * 0.9
+                        && row.rect.minY < union.maxY && row.rect.maxY > union.minY && abs(row.rect.minY - union.minY) < w * 2
+                }
                 let h = last.rect.height
                 let widest = group.map(\.rect.width).max() ?? 0
                 let gap = row.rect.minY - last.rect.maxY
                 let sameSize = max(h, row.rect.height) / max(min(h, row.rect.height), 1) <= 1.35
-                let aligned = abs(row.rect.minX - last.rect.minX) <= h * 1.2
+                let sameRegion = row.region != nil && row.region == last.region
+                let leftAligned = abs(row.rect.minX - last.rect.minX) <= h * 1.2
+                let centred = sameRegion && !leftAligned && abs(row.rect.midX - last.rect.midX) <= h * 1.2
                 let ranOn = last.rect.width >= max(widest, row.rect.width) * 0.75
                     && last.text.count >= (last.closeSet ? 16 : 20)
                     && !(last.text.last.map { ".!?。！？:：".contains($0) } ?? false)
@@ -59,7 +124,11 @@ public enum ImageTranslation {
                 // entry of a list starts with a capital. Chinese and Japanese have no case to go by.
                 let continues = last.closeSet || row.closeSet || row.text.first?.isLowercase == true
                     || last.text.hasSuffix(",") || last.text.hasSuffix("-")
-                return sameSize && aligned && ranOn && continues && gap > -h * 0.3 && gap < h * 0.9
+                // Vision saying it's one paragraph stands in for either sign, and for both when
+                // the lines are centred (a title over two lines); left-aligned short lines in
+                // one of its paragraphs may still be a menu.
+                let carriesOn = centred || (sameRegion ? ranOn || continues : ranOn && continues)
+                return sameSize && (leftAligned || centred) && carriesOn && gap > -h * 0.3 && gap < h * 0.9
             }
             if let i = groups.lastIndex(where: joins) {
                 groups[i].append(row)
@@ -68,22 +137,59 @@ public enum ImageTranslation {
             }
         }
         return groups.map { group in
+            let rect = group.dropFirst().reduce(group[0].rect) { $0.union($1.rect) }
+            if group[0].vertical {
+                let columns = group.sorted { $0.rect.maxX > $1.rect.maxX }
+                return TextBlock(text: columns.map(\.text).joined(), rect: rect,
+                                 lineHeight: columns.map(\.rect.width).reduce(0, +) / CGFloat(columns.count),
+                                 lineCount: columns.count, vertical: true)
+            }
             var text = group[0].text
             for (previous, row) in zip(group, group.dropFirst()) {
                 // Chinese and Japanese lines run on without a space.
                 text += (previous.closeSet && row.closeSet ? "" : " ") + row.text
             }
-            let rect = group.dropFirst().reduce(group[0].rect) { $0.union($1.rect) }
             let lineHeight = group.map(\.rect.height).reduce(0, +) / CGFloat(group.count)
-            return TextBlock(text: text, rect: rect, lineHeight: lineHeight, lineCount: group.count)
+            return TextBlock(text: text, rect: rect, lineHeight: lineHeight, lineCount: group.count, angle: group[0].angle)
         }
     }
 
     // MARK: Drawing
 
-    /// `image` with each block covered and its translation written in its place, the same size
-    /// as the image. A missing or empty translation leaves its block as it was.
+    /// Where a block's translation was drawn and the text it took the place of, so the image
+    /// can show the original of the part under the pointer. A block left as it was has an
+    /// empty translation.
+    public struct Spot: Equatable, Sendable {
+        /// The original and its translation, in the image's pixels from the top left, before
+        /// turning by `angle` about `pivot`.
+        public var rect: CGRect
+        public var angle: CGFloat
+        public var pivot: CGPoint
+        public var original: String
+        public var translation: String
+
+        /// The box it covers on the image.
+        public var bounds: CGRect { angle == 0 ? rect : rect.applying(turn) }
+
+        public func contains(_ point: CGPoint) -> Bool {
+            rect.contains(angle == 0 ? point : point.applying(turn.inverted()))
+        }
+
+        private var turn: CGAffineTransform {
+            CGAffineTransform(translationX: pivot.x, y: pivot.y).rotated(by: angle).translatedBy(x: -pivot.x, y: -pivot.y)
+        }
+    }
+
+    /// `image` with each block's letters taken out (what's behind them carries on, see
+    /// `Pixels.erase`) and its translation written in its place, the same size as the image. A
+    /// missing or empty translation leaves its block as it was.
     public static func render(_ image: CGImage, blocks: [TextBlock], translations: [String]) -> CGImage? {
+        rendered(image, blocks: blocks, translations: translations)?.image
+    }
+
+    /// `render`, with where each translation went.
+    public static func rendered(_ image: CGImage, blocks: [TextBlock], translations: [String]) -> (image: CGImage, spots: [Spot])? {
+        let originals = blocks
         let width = image.width, height = image.height
         guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -95,10 +201,15 @@ public enum ImageTranslation {
         // Colours are read before anything is drawn over the image.
         let backgrounds = blocks.map { pixels.background(around: $0) }
         // The size the letters really are, from their ink: Vision's boxes run from about the
-        // font size for large letters to nearly twice it for small ones.
+        // font size for large letters to nearly twice it for small ones. Turned and vertical
+        // lines go by their boxes, which their ink isn't measured across.
         let blocks = evenedOut(blocks.enumerated().map { i, block in
             var sized = block
-            if let size = pixels.fontSize(of: block, background: backgrounds[i]) {
+            if block.vertical {
+                sized.lineHeight = block.lineHeight * 0.85
+            } else if block.angle != 0 {
+                sized.lineHeight = block.rect.height * 0.72
+            } else if let size = pixels.fontSize(of: block, background: backgrounds[i]) {
                 sized.lineHeight = min(max(size, block.lineHeight * 0.45), block.lineHeight * 1.2)
             }
             return sized
@@ -110,14 +221,18 @@ public enum ImageTranslation {
         for (i, block) in blocks.enumerated() where i < translations.count {
             let text = translations[i].trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
+            if block.vertical || block.angle != 0 {
+                placed[i] = placeTurned(text, over: block, colours: colours[i])
+                continue
+            }
             let others = blocks.filter { $0 != block }
             func overlapsColumn(_ other: TextBlock) -> Bool {
-                other.rect.minX < block.rect.maxX && other.rect.maxX > block.rect.minX
+                other.bounds.minX < block.rect.maxX && other.bounds.maxX > block.rect.minX
             }
             // How far right it may run: to the next block on its row, the edge of what it sits
             // on (a button, a box), or the image's edge.
-            let next = others.filter { $0.rect.minX >= block.rect.maxX - 1
-                && $0.rect.minY < block.rect.maxY && $0.rect.maxY > block.rect.minY }.map(\.rect.minX).min()
+            let next = others.filter { $0.bounds.minX >= block.rect.maxX - 1
+                && $0.bounds.minY < block.rect.maxY && $0.bounds.maxY > block.rect.minY }.map(\.bounds.minX).min()
             let edge = pixels.edge(rightOf: block, background: colours[i].background)
             // Labels lined up on their right edges (as beside a form's fields) stay that way,
             // growing to the left, up to the block before them on their row.
@@ -126,23 +241,23 @@ public enum ImageTranslation {
                     && abs($0.rect.minX - block.rect.minX) > block.lineHeight * 0.5
                     && abs($0.rect.midY - block.rect.midY) < block.lineHeight * 8
             }
-            let previous = others.filter { $0.rect.maxX <= block.rect.minX + 1
-                && $0.rect.minY < block.rect.maxY && $0.rect.maxY > block.rect.minY }.map(\.rect.maxX).max()
+            let previous = others.filter { $0.bounds.maxX <= block.rect.minX + 1
+                && $0.bounds.minY < block.rect.maxY && $0.bounds.maxY > block.rect.minY }.map(\.bounds.maxX).max()
             let room = alignsRight
                 ? max(block.rect.maxX - (previous ?? 0) - block.lineHeight * 0.5, block.rect.width)
                 : max(min(next ?? CGFloat(width), edge) - block.lineHeight * 0.5 - block.rect.minX, block.rect.width)
             // How tall a line may be without reaching the lines above and below it: the distance
             // between the middles of neighbouring lines, which is even down a list where
             // Vision's boxes aren't.
-            let pitches = others.filter { overlapsColumn($0) && abs($0.rect.midY - block.rect.midY) > block.lineHeight * 0.5 }
-                .map { abs($0.rect.midY - block.rect.midY) }
+            let pitches = others.filter { overlapsColumn($0) && abs($0.bounds.midY - block.rect.midY) > block.lineHeight * 0.5 }
+                .map { abs($0.bounds.midY - block.rect.midY) }
             let tallest = max(min(block.lineHeight * 1.6, pitches.min() ?? .greatestFiniteMagnitude), block.lineHeight * 0.9)
             fits[i] = (room, tallest, alignsRight)
             placed[i] = place(text, over: block, room: room, tallest: tallest, colours: colours[i], alignsRight: alignsRight)
         }
         // Lines of one list come out one size: the smallest any of them needed.
         let lists = listGroups(blocks)
-        for (i, item) in placed where blocks[i].lineCount == 1 {
+        for (i, item) in placed where fits[i] != nil && blocks[i].lineCount == 1 {
             let smallest = placed.filter { lists[$0.key] == lists[i] }.map(\.value.size).min() ?? item.size
             guard smallest < item.size, let fit = fits[i] else { continue }
             let text = translations[i].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -150,19 +265,28 @@ public enum ImageTranslation {
                               alignsRight: fit.alignsRight, size: smallest)
         }
 
+        // Every block's letters out first, then every text, so no erasing takes out another's text.
+        for i in placed.keys { pixels.erase(blocks[i]) }
         ctx.translateBy(x: 0, y: CGFloat(height))
         ctx.scaleBy(x: 1, y: -1)
-        // Every background first, then every text, so no block's background covers another's text.
-        for item in placed.values {
-            ctx.setFillColor(item.background)
-            ctx.addPath(CGPath(roundedRect: item.area, cornerWidth: item.corner, cornerHeight: item.corner, transform: nil))
-            ctx.fillPath()
-        }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
         for item in placed.values { item.draw(ctx) }
         NSGraphicsContext.restoreGraphicsState()
-        return ctx.makeImage()
+        guard let made = ctx.makeImage() else { return nil }
+        // Blocks left as they were (already in the target, a code, a number) get one too, so
+        // every text read on the image can be copied from it.
+        let spots = blocks.indices.map { i in
+            let pad = (dx: -blocks[i].lineHeight * 0.2, dy: -blocks[i].lineHeight * 0.15)
+            guard let item = placed[i] else {
+                let rect = originals[i].rect
+                return Spot(rect: rect.insetBy(dx: pad.dx, dy: pad.dy), angle: originals[i].angle,
+                            pivot: CGPoint(x: rect.midX, y: rect.midY), original: originals[i].text, translation: "")
+            }
+            return Spot(rect: item.area.insetBy(dx: pad.dx, dy: pad.dy), angle: item.angle, pivot: item.pivot,
+                        original: originals[i].text, translation: translations[i].trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (made, spots)
     }
 
     /// Lines of a list or column (one under another, starting at the same place, about the same
@@ -171,7 +295,7 @@ public enum ImageTranslation {
     static func evenedOut(_ blocks: [TextBlock]) -> [TextBlock] {
         let lists = listGroups(blocks)
         return blocks.enumerated().map { i, block in
-            guard block.lineCount == 1 else { return block }
+            guard block.lineCount == 1, block.angle == 0, !block.vertical else { return block }
             let peers = blocks.indices.filter { lists[$0] == lists[i] }.map { blocks[$0].lineHeight }.sorted()
             var evened = block
             evened.lineHeight = peers[peers.count / 2]
@@ -185,8 +309,9 @@ public enum ImageTranslation {
     static func listGroups(_ blocks: [TextBlock]) -> [Int] {
         var group = Array(blocks.indices)
         func root(_ i: Int) -> Int { group[i] == i ? i : root(group[i]) }
-        for i in blocks.indices where blocks[i].lineCount == 1 {
-            for j in blocks.indices where j > i && blocks[j].lineCount == 1 {
+        let straight = { (i: Int) in blocks[i].lineCount == 1 && blocks[i].angle == 0 && !blocks[i].vertical }
+        for i in blocks.indices where straight(i) {
+            for j in blocks.indices where j > i && straight(j) {
                 let a = blocks[i], b = blocks[j]
                 let h = max(a.lineHeight, b.lineHeight)
                 guard abs(a.rect.minX - b.rect.minX) <= h, abs(a.rect.midY - b.rect.midY) <= h * 2.2,
@@ -197,12 +322,13 @@ public enum ImageTranslation {
         return blocks.indices.map(root)
     }
 
-    /// A translation laid out over its block: the background to cover it with, and the text.
+    /// A translation laid out over its block, ready to draw.
     private struct Placed {
         var size: CGFloat
+        /// What the original and the translation cover, before turning by `angle` about `pivot`.
         var area: CGRect
-        var corner: CGFloat
-        var background: CGColor
+        var angle: CGFloat = 0
+        var pivot: CGPoint = .zero
         var draw: (CGContext) -> Void
     }
 
@@ -212,7 +338,6 @@ public enum ImageTranslation {
     /// wider, then below.
     private static func place(_ text: String, over block: TextBlock, room: CGFloat, tallest: CGFloat,
                               colours: Colours, alignsRight: Bool = false, size given: CGFloat? = nil) -> Placed {
-        let pad = max(2, block.lineHeight * 0.15)
         let colour = NSColor(cgColor: colours.text) ?? .black
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byWordWrapping
@@ -235,10 +360,8 @@ public enum ImageTranslation {
             let squeeze = natural.width > room ? max(room / natural.width, 0.7) : 1
             let width = natural.width * squeeze
             let x = alignsRight ? block.rect.maxX - width : block.rect.minX
-            let left = min(x, block.rect.minX)
-            let area = CGRect(x: left - pad * 0.6, y: block.rect.minY - pad * 0.4,
-                              width: max(block.rect.maxX, x + width) - left + pad * 1.2, height: block.rect.height + pad * 0.8)
-            return Placed(size: size, area: area, corner: pad, background: colours.background) { ctx in
+            let drawn = CGRect(x: x, y: block.rect.midY - natural.height / 2, width: width, height: natural.height)
+            return Placed(size: size, area: block.rect.union(drawn)) { ctx in
                 ctx.saveGState()
                 ctx.translateBy(x: x, y: block.rect.midY - natural.height / 2)
                 ctx.scaleBy(x: squeeze, y: 1)
@@ -252,12 +375,17 @@ public enum ImageTranslation {
             (text as NSString).boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
                                             options: [.usesLineFragmentOrigin], attributes: attributes(size)).size
         }
+        // The longest word, which mustn't be broken in two: a narrow block (a column of
+        // vertical writing, say) shrinks its translation until that fits across.
+        // Chinese and Japanese wrap between any two characters: no word to keep whole.
+        let longest = isCloseSet(text) ? "" : text.components(separatedBy: .whitespacesAndNewlines).max { $0.count < $1.count } ?? ""
+        func wordFits(_ size: CGFloat) -> Bool { (longest as NSString).size(withAttributes: attributes(size)).width <= width }
         // Lines of the original as far apart as these will be.
         size = min(size, block.rect.height / CGFloat(block.lineCount) / 1.2)
         let smallest = max(block.lineHeight * 0.5, 6)
         let fits = block.rect.height * 1.08
         var measured = measure(size)
-        while measured.height > fits, size > smallest {
+        while measured.height > fits || !wordFits(size), size > smallest {
             size = max(size * 0.93, smallest)
             measured = measure(size)
         }
@@ -265,13 +393,81 @@ public enum ImageTranslation {
             width = room
             measured = measure(size)
         }
-        var area = block.rect.insetBy(dx: -pad * 0.6, dy: -pad * 0.4)
-        area.size.width = max(area.width, measured.width + pad * 1.2)
-        area.size.height = max(area.height, measured.height + pad)
         let frame = CGRect(x: block.rect.minX, y: block.rect.minY, width: width, height: measured.height + 1)
-        return Placed(size: size, area: area, corner: pad, background: colours.background) { _ in
+        return Placed(size: size, area: block.rect.union(frame)) { _ in
             (text as NSString).draw(with: frame, options: [.usesLineFragmentOrigin], attributes: attributes(size))
         }
+    }
+
+    /// Lays out the translation of a turned line or of vertical Chinese or Japanese. A turned
+    /// line's translation is turned the same way. Vertical text is translated into vertical
+    /// text when the translation is Chinese or Japanese; else a single column's translation
+    /// runs down it, turned (as on a book's spine), and columns side by side get a paragraph
+    /// across their area.
+    private static func placeTurned(_ text: String, over block: TextBlock, colours: Colours) -> Placed {
+        if block.vertical, isCloseSet(text) { return placeVertical(text, over: block, colours: colours) }
+        var frame = block
+        if block.vertical {
+            if block.lineCount == 1, block.rect.height > block.rect.width * 2.5 {
+                let r = block.rect
+                frame.rect = CGRect(x: r.midX - r.height / 2, y: r.midY - r.width / 2, width: r.height, height: r.width)
+                frame.angle = .pi / 2
+            } else {
+                frame.lineCount = max(2, Int((block.rect.height / (block.lineHeight * 1.25)).rounded()))
+            }
+        }
+        let laid = place(text, over: frame, room: frame.rect.width * (frame.lineCount == 1 ? 1.15 : 1),
+                         tallest: frame.rect.height * 1.1, colours: colours)
+        guard frame.angle != 0 else { return laid }
+        let centre = CGPoint(x: frame.rect.midX, y: frame.rect.midY)
+        return Placed(size: laid.size, area: laid.area.union(frame.rect), angle: frame.angle, pivot: centre) { ctx in
+            ctx.saveGState()
+            ctx.translateBy(x: centre.x, y: centre.y)
+            ctx.rotate(by: frame.angle)
+            ctx.translateBy(x: -centre.x, y: -centre.y)
+            laid.draw(ctx)
+            ctx.restoreGState()
+        }
+    }
+
+    /// Chinese or Japanese text, written in columns from the right, as large as fits the block.
+    private static func placeVertical(_ text: String, over block: TextBlock, colours: Colours) -> Placed {
+        let font = NSFont.systemFont(ofSize: block.lineHeight, weight: colours.bold ? .bold : .regular)
+        // A column takes a little more than its letters' width (the font's line spacing).
+        let area = block.rect.insetBy(dx: -block.lineHeight * 0.3, dy: 0)
+        func frame(_ size: CGFloat) -> CTFrame {
+            let string = NSAttributedString(string: text.replacingOccurrences(of: "\n", with: ""), attributes: [
+                .font: font.withSize(size), .foregroundColor: NSColor(cgColor: colours.text) ?? .black,
+                .verticalGlyphForm: true,
+            ])
+            let setter = CTFramesetterCreateWithAttributedString(string)
+            let attributes = [kCTFrameProgressionAttributeName: CTFrameProgression.rightToLeft.rawValue] as CFDictionary
+            return CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0), CGPath(rect: area, transform: nil), attributes)
+        }
+        let length = text.replacingOccurrences(of: "\n", with: "").utf16.count
+        var size = block.lineHeight
+        var laid = frame(size)
+        while CTFrameGetVisibleStringRange(laid).length < length, size > 6 {
+            size = max(size * 0.92, 6)
+            laid = frame(size)
+        }
+        let r = block.rect
+        return Placed(size: size, area: r) { ctx in
+            // Core Text draws with y going up; the image context's y goes down.
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: r.minY + r.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.textMatrix = .identity
+            CTFrameDraw(laid, ctx)
+            ctx.restoreGState()
+        }
+    }
+
+    /// Mostly Chinese or Japanese characters, which can be written in columns.
+    static func isCloseSet(_ text: String) -> Bool {
+        let letters = text.unicodeScalars.filter { $0.properties.isAlphabetic }
+        let cjk = letters.filter { (0x3040...0x30FF).contains($0.value) || (0x3400...0x9FFF).contains($0.value) }
+        return !letters.isEmpty && cjk.count * 2 >= letters.count
     }
 
     struct Colours {
@@ -346,6 +542,151 @@ public enum ImageTranslation {
             return CGFloat(edge)
         }
 
+        /// Takes a block's letters out and fills where they were from the pixels around them, so
+        /// a photo, gradient or texture behind the text carries on under the translation (a patch
+        /// of one colour over it looked pasted on). The background is a gradient fitted to a ring
+        /// just outside the block; letters are what differs from it, a little widened for their
+        /// soft edges, and are filled from their edges inwards. On a plain or evenly shaded
+        /// background the gradient itself fills them, which leaves no streaks.
+        func erase(_ block: TextBlock) {
+            let pad = max(2, block.lineHeight * 0.2)
+            let inner = block.rect.insetBy(dx: -pad, dy: -pad)
+            let ringWidth: CGFloat = 3
+            let ring = inner.insetBy(dx: -ringWidth, dy: -ringWidth)
+            let turn = CGAffineTransform(translationX: block.rect.midX, y: block.rect.midY).rotated(by: block.angle)
+                .translatedBy(x: -block.rect.midX, y: -block.rect.midY)
+            let back = turn.inverted()
+            let area = ring.applying(turn).integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+            guard !area.isNull, area.width > 2, area.height > 2 else { return }
+            let x0 = Int(area.minX), y0 = Int(area.minY), w = Int(area.width), h = Int(area.height)
+
+            // Where each pixel is: 0 outside, 1 in the ring, 2 in the block.
+            var zone = [UInt8](repeating: 0, count: w * h)
+            var colour = [SIMD3<Double>](repeating: .zero, count: w * h)
+            for y in 0..<h {
+                for x in 0..<w {
+                    let i = y * w + x
+                    let p = CGPoint(x: CGFloat(x0 + x) + 0.5, y: CGFloat(y0 + y) + 0.5).applying(back)
+                    zone[i] = inner.contains(p) ? 2 : ring.contains(p) ? 1 : 0
+                    if let c = rgb(x0 + x, y0 + y) { colour[i] = SIMD3(Double(c.0), Double(c.1), Double(c.2)) }
+                }
+            }
+
+            // The gradient through the ring, fitted twice: the second time without the quarter
+            // that fit worst (a neighbour's letters, an icon).
+            var used = (0..<w * h).filter { zone[$0] == 1 }
+            guard used.count >= 6 else { return }
+            var plane = (base: SIMD3<Double>.zero, dx: SIMD3<Double>.zero, dy: SIMD3<Double>.zero)
+            func predicted(_ i: Int) -> SIMD3<Double> {
+                plane.base + plane.dx * Double(i % w - w / 2) + plane.dy * Double(i / w - h / 2)
+            }
+            func distance(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double {
+                let d = a - b
+                return (d * d).sum().squareRoot()
+            }
+            for pass in 0..<2 {
+                plane = Self.fit(used.map { (Double($0 % w - w / 2), Double($0 / w - h / 2), colour[$0]) })
+                if pass == 0 {
+                    let sorted = used.sorted { distance(colour[$0], predicted($0)) < distance(colour[$1], predicted($1)) }
+                    used = Array(sorted.prefix(max(6, sorted.count * 3 / 4)))
+                }
+            }
+            let misses = used.map { distance(colour[$0], predicted($0)) }.sorted()
+            let noise = misses[misses.count / 2]
+
+            // The letters: what differs from the background, widened by a pixel or two.
+            var missing = (0..<w * h).map { zone[$0] == 2 && distance(colour[$0], predicted($0)) > max(0.1, noise * 3) }
+            let neighbours = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            for _ in 0..<max(1, Int((block.lineHeight * 0.07).rounded())) {
+                var grown = missing
+                for i in missing.indices where missing[i] {
+                    for (dx, dy) in neighbours {
+                        let x = i % w + dx, y = i / w + dy
+                        if x >= 0, y >= 0, x < w, y < h, zone[y * w + x] != 0 { grown[y * w + x] = true }
+                    }
+                }
+                missing = grown
+            }
+            let filled = missing.indices.filter { missing[$0] }
+            guard !filled.isEmpty else { return }
+
+            if noise < 0.03 {
+                for i in filled { colour[i] = predicted(i) }
+            } else {
+                // From the edges inwards, each pixel the average of those around it already known.
+                var left = filled
+                while !left.isEmpty {
+                    var known: [(Int, SIMD3<Double>)] = []
+                    var still: [Int] = []
+                    for i in left {
+                        var sum = SIMD3<Double>.zero, n = 0.0
+                        for dy in -1...1 {
+                            for dx in -1...1 where dx != 0 || dy != 0 {
+                                let x = i % w + dx, y = i / w + dy
+                                guard x >= 0, y >= 0, x < w, y < h, !missing[y * w + x] else { continue }
+                                sum += colour[y * w + x]
+                                n += 1
+                            }
+                        }
+                        if n > 0 { known.append((i, sum / n)) } else { still.append(i) }
+                    }
+                    if known.isEmpty {
+                        for i in still { colour[i] = predicted(i) }
+                        break
+                    }
+                    for (i, c) in known { colour[i] = c; missing[i] = false }
+                    left = still
+                }
+                // Softened a little, so the fill shows no streaks from the edges.
+                for _ in 0..<2 {
+                    let before = colour
+                    for i in filled {
+                        var sum = before[i], n = 1.0
+                        for (dx, dy) in neighbours {
+                            let x = i % w + dx, y = i / w + dy
+                            guard x >= 0, y >= 0, x < w, y < h else { continue }
+                            sum += before[y * w + x]
+                            n += 1
+                        }
+                        colour[i] = sum / n
+                    }
+                }
+            }
+            for i in filled {
+                let p = data + (y0 + i / w) * bytesPerRow + (x0 + i % w) * 4
+                let alpha = Double(p[3]) / 255
+                let c = colour[i]
+                p[0] = UInt8((min(max(c.x, 0), 1) * alpha * 255).rounded())
+                p[1] = UInt8((min(max(c.y, 0), 1) * alpha * 255).rounded())
+                p[2] = UInt8((min(max(c.z, 0), 1) * alpha * 255).rounded())
+            }
+        }
+
+        /// The colour `base + dx·x + dy·y` closest to `samples` (least squares), or their average
+        /// when they don't spread out enough to tell a slope.
+        static func fit(_ samples: [(x: Double, y: Double, colour: SIMD3<Double>)]) -> (base: SIMD3<Double>, dx: SIMD3<Double>, dy: SIMD3<Double>) {
+            let n = Double(samples.count)
+            var sx = 0.0, sy = 0.0, sxx = 0.0, syy = 0.0, sxy = 0.0
+            var sc = SIMD3<Double>.zero, sxc = SIMD3<Double>.zero, syc = SIMD3<Double>.zero
+            for s in samples {
+                sx += s.x; sy += s.y; sxx += s.x * s.x; syy += s.y * s.y; sxy += s.x * s.y
+                sc += s.colour; sxc += s.colour * s.x; syc += s.colour * s.y
+            }
+            // Cramer's rule on the normal equations.
+            func det(_ a: Double, _ b: Double, _ c: Double, _ d: Double, _ e: Double, _ f: Double, _ g: Double, _ h: Double, _ i: Double) -> Double {
+                a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+            }
+            let d = det(n, sx, sy, sx, sxx, sxy, sy, sxy, syy)
+            guard abs(d) > 1e-6 else { return (sc / max(n, 1), .zero, .zero) }
+            var base = SIMD3<Double>.zero, dx = SIMD3<Double>.zero, dy = SIMD3<Double>.zero
+            for k in 0..<3 {
+                base[k] = det(sc[k], sx, sy, sxc[k], sxx, sxy, syc[k], sxy, syy) / d
+                dx[k] = det(n, sc[k], sy, sx, sxc[k], sxy, sy, syc[k], syy) / d
+                dy[k] = det(n, sx, sc[k], sx, sxx, sxc[k], sy, sxy, syc[k]) / d
+            }
+            return (base, dx, dy)
+        }
+
         let data: UnsafeMutablePointer<UInt8>
         let width: Int
         let height: Int
@@ -370,7 +711,7 @@ public enum ImageTranslation {
         /// letters don't count) and its text (what inside differs most from that background).
         func colours(around block: TextBlock) -> Colours {
             let pad = max(2, block.lineHeight * 0.15)
-            let ring = block.rect.insetBy(dx: -pad, dy: -pad)
+            let ring = block.bounds.insetBy(dx: -pad, dy: -pad)
             var edge: [(CGFloat, CGFloat, CGFloat)] = []
             let step = max(1, Int(max(ring.width, ring.height) / 120))
             for x in stride(from: Int(ring.minX), through: Int(ring.maxX), by: step) {
@@ -386,7 +727,7 @@ public enum ImageTranslation {
                 : (median(edge.map(\.0)), median(edge.map(\.1)), median(edge.map(\.2)))
 
             var inside: [(colour: (CGFloat, CGFloat, CGFloat), distance: CGFloat)] = []
-            let r = block.rect
+            let r = block.bounds
             let stepX = max(1, Int(r.width / 60)), stepY = max(1, Int(r.height / 12))
             for y in stride(from: Int(r.minY), to: Int(r.maxY), by: stepY) {
                 for x in stride(from: Int(r.minX), to: Int(r.maxX), by: stepX) {
@@ -448,7 +789,7 @@ public enum ImageTranslation {
     /// language per request) and to leave alone what's already in the target. Nil for a block
     /// with no letters (a number, a price), which stays as it is.
     public static func language(of text: String, allowed: [String]) -> String? {
-        guard text.contains(where: \.isLetter), !isAddress(text) else { return nil }
+        guard text.contains(where: \.isLetter), !isAddress(text), !isCode(text) else { return nil }
         let allowed = allowed.isEmpty ? TextRecognizer.defaultLanguages : allowed
         func pick(_ base: String) -> String? { allowed.first { Translator.base(of: $0) == base } }
         let scalars = text.unicodeScalars
@@ -474,6 +815,21 @@ public enum ImageTranslation {
         // name.ext, as in a list of files.
         return t.range(of: #"^[^.]+\.[A-Za-z0-9]{2,5}$"#, options: .regularExpression) != nil && t.contains(where: \.isLetter)
             && !(t.last.map { ".!?".contains($0) } ?? false)
+    }
+
+    /// A code, ID, version, measurement or stray mark ("SKU-48213", "v2.4.1", "#3A7BD5", "12kg",
+    /// "x"): what reads the same in every language, or what Vision made of a logo or an icon.
+    static func isCode(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        let letters = t.filter(\.isLetter).count
+        let marks = t.filter { !$0.isWhitespace }.count
+        // One Latin letter on its own; Chinese and Japanese say a word in one character.
+        if letters <= 1, t.unicodeScalars.allSatisfy(\.isASCII) { return true }
+        // Mostly digits and symbols.
+        if Double(letters) < Double(marks) * 0.3 { return true }
+        // One word with digits in it, as many digits and marks as letters.
+        guard !t.contains(where: \.isWhitespace), t.contains(where: \.isNumber) else { return false }
+        return letters <= marks - letters
     }
 
     /// The first language in `priority` that some block isn't already in.

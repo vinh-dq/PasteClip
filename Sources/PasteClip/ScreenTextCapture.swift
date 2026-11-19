@@ -91,7 +91,11 @@ final class ScreenTextCapture {
         }
         store.copyToPasteboard(item)
         onCopied?()
-        if settings.translateScreenText, let onTranslate { return onTranslate(text) }
+        if settings.translateScreenText, let onTranslate {
+            // The translation panel says the rest; "Reading text…" mustn't stay behind.
+            toast.hide()
+            return onTranslate(text)
+        }
         let lines = text.split(separator: "\n").count
         toast.show(lines > 1 ? "Copied \(lines) lines of text" : "Copied text", symbol: "checkmark.circle.fill",
                    preview: text)
@@ -253,15 +257,18 @@ final class Toast {
         return panel
     }()
     private var hideWork: DispatchWorkItem?
+    private let tone = GlowTone()
+    private lazy var halo = GlowHalo(around: panel, kind: .panel, cornerRadius: 19, tone: tone)
     var sharingType = NSWindow.SharingType.readOnly
 
     /// `stays` keeps it up until the next message, for work still going on.
     func show(_ message: String, symbol: String, preview: String? = nil, stays: Bool = false) {
         let excerpt = preview.map(Self.excerpt)
         let view = NSHostingView(rootView: ToastView(message: message, symbol: symbol, preview: excerpt,
-                                                     previewWidth: excerpt.map(Self.width) ?? 0))
+                                                     previewWidth: excerpt.map(Self.width) ?? 0, tone: tone))
         let size = view.fittingSize
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+                ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
         panel.contentView = view
         panel.setFrame(NSRect(x: visible.midX - size.width / 2, y: visible.minY + 80, width: size.width, height: size.height),
@@ -269,6 +276,8 @@ final class Toast {
         panel.alphaValue = 1
         panel.sharingType = sharingType
         panel.orderFrontRegardless()
+        halo.cornerRadius = preview == nil ? 19 : 14
+        halo.syncVisibility()
 
         hideWork?.cancel()
         guard !stays else { return }
@@ -281,6 +290,16 @@ final class Toast {
         hideWork = work
         // Long enough to read the text.
         DispatchQueue.main.asyncAfter(deadline: .now() + (preview == nil ? 1.6 : 3), execute: work)
+    }
+
+    /// Fades out a message shown to stay (as "Reading text…").
+    func hide() {
+        hideWork?.cancel()
+        hideWork = nil
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [panel] in if panel.alphaValue == 0 { panel.orderOut(nil) } })
     }
 
     /// The first lines of `text`, on one line each.
@@ -302,6 +321,7 @@ private struct ToastView: View {
     let symbol: String
     var preview: String?
     var previewWidth: CGFloat = 0
+    let tone: GlowTone
 
     static let previewFontSize: CGFloat = 12
     static let maxPreviewWidth: CGFloat = 360
@@ -324,6 +344,7 @@ private struct ToastView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .lightRim(cornerRadius: preview == nil ? 19 : 14, tone: tone)
         .background(GlassBackground(cornerRadius: preview == nil ? 19 : 14))
         .fixedSize()
     }

@@ -106,7 +106,7 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
 @Test func imageShortcutsDefaultAndCanBeChanged() {
     let defaults = Scratch.defaults()
     let settings = AppSettings(defaults: defaults)
-    #expect(settings.floatImageKey?.display == "⌥⌘P")
+    #expect(settings.floatImageKey?.display == "⌃F")
     #expect(settings.screenshotHotKey?.display == "⇧⌘1")
     #expect(settings.screenshotAction == .offer)
     settings.screenshotHotKey = KeyCombo(keyCode: 0, modifiers: KeyCombo.control | KeyCombo.shift, keyName: "A")
@@ -117,7 +117,7 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
     #expect(reloaded.screenshotAction == .edit)
     #expect(reloaded.floatImageKey == nil)
     reloaded.resetShortcuts()
-    #expect(reloaded.floatImageKey?.display == "⌥⌘P" && reloaded.screenshotHotKey?.display == "⇧⌘1")
+    #expect(reloaded.floatImageKey?.display == "⌃F" && reloaded.screenshotHotKey?.display == "⇧⌘1")
 }
 
 @Test func draggingACornerScalesTextFromTheOppositeCorner() {
@@ -230,8 +230,16 @@ private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: 
     let old = KeyCombo(keyCode: 35, modifiers: KeyCombo.command | KeyCombo.shift, keyName: "P")
     defaults.set(try! JSONEncoder().encode(old), forKey: "floatImageKey")
     let settings = AppSettings(defaults: defaults)
-    #expect(settings.floatImageKey?.display == "⌥⌘P")
+    #expect(settings.floatImageKey?.display == "⌃F")
     // Chosen again afterwards, it stays.
     settings.floatImageKey = old
     #expect(AppSettings(defaults: defaults).floatImageKey == old)
+    // ⌥⌘P, the default after that, moves to ⌃F once too.
+    let later = Scratch.defaults()
+    let previous = KeyCombo(keyCode: 35, modifiers: KeyCombo.command | KeyCombo.option, keyName: "P")
+    later.set(try! JSONEncoder().encode(previous), forKey: "floatImageKey")
+    let moved = AppSettings(defaults: later)
+    #expect(moved.floatImageKey?.display == "⌃F")
+    moved.floatImageKey = previous
+    #expect(AppSettings(defaults: later).floatImageKey == previous)
 }

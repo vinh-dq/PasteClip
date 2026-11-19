@@ -112,3 +112,12 @@ private func line(_ text: String, y: CGFloat, x: CGFloat = 0.1, width: CGFloat =
     #expect(back == lines)
     #expect(back[0].isHanOrKana && !back[1].isHanOrKana)
 }
+
+@Test func aMergedLineKeepsWhichWayItRuns() {
+    // A column of vertical Japanese, read bottom up, over Latin guesses at the same place.
+    var column = Line(text: "間時業営", box: CGRect(x: 0.7, y: 0.4, width: 0.04, height: 0.3), script: .hanAndKana)
+    column.quad = [CGPoint(x: 0.7, y: 0.4), CGPoint(x: 0.7, y: 0.7), CGPoint(x: 0.74, y: 0.7), CGPoint(x: 0.74, y: 0.4)]
+    let latin = [Line(text: "I", box: CGRect(x: 0.7, y: 0.45, width: 0.04, height: 0.2), script: .latin)]
+    let merged = TextRecognizer.merge([latin, [column]])
+    #expect(merged.map(\.quad) == [column.quad])
+}

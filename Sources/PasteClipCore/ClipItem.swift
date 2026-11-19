@@ -61,6 +61,8 @@ public struct ClipItem: Identifiable, Codable, Equatable {
     public var sourceBundleID: String?
     public var sourceName: String?
     public var date = Date()
+    /// Pinned with the Pin command, which was removed: clips pinned before then are still kept,
+    /// never trimmed from history.
     public var pinned = false
     public var pinboardID: UUID?
     /// Position on its pinboard, lower first. nil sorts by date, newest first (see `boardKey`).

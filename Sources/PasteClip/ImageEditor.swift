@@ -50,6 +50,8 @@ final class ImageEditorController: NSObject, NSWindowDelegate {
     private let model: ImageEditorModel
     private let canvas: MarkupCanvasView
     private let window: NSWindow
+    private let tone = GlowTone()
+    private var halo: GlowHalo?
     private var keyMonitor: Any?
     private var closing = false
     /// The app that was in front, which gets the focus back when the editor closes.
@@ -72,7 +74,7 @@ final class ImageEditorController: NSObject, NSWindowDelegate {
         window.contentMinSize = NSSize(width: 860, height: 540)
         window.delegate = self
         window.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
-        let view = ImageEditorView(model: model, settings: settings, canvas: canvas) { [weak self] in self?.finish($0) }
+        let view = ImageEditorView(model: model, settings: settings, canvas: canvas, tone: tone) { [weak self] in self?.finish($0) }
         window.contentView = NSHostingView(rootView: view)
         window.center()
     }
@@ -94,6 +96,9 @@ final class ImageEditorController: NSObject, NSWindowDelegate {
         if window.isMiniaturized { window.deminiaturize(nil) }
         // In front and taking keys at once, without waiting for macOS to bring PasteClip forward.
         window.orderFrontRegardless()
+        // The same soft light around it as around the shelf and the popups.
+        if halo == nil { halo = GlowHalo(around: window, kind: .panel, cornerRadius: ImageEditorView.windowCornerRadius, tone: tone) }
+        halo?.syncVisibility()
         window.makeKey()
         window.makeFirstResponder(canvas)
         installKeyMonitor()
@@ -115,16 +120,34 @@ final class ImageEditorController: NSObject, NSWindowDelegate {
             }
             return
         }
-        var result = store.item(withID: item.id) ?? item
-        if model.hasChanges {
-            // The marked-up image is a new clip; the original is left alone.
-            guard let image = model.renderer.render(model.marks, crop: model.crop),
-                  let png = MarkupRenderer.pngData(image),
-                  // Uncropped, it still floats over the spot it was taken from.
-                  let saved = store.addImage(png, title: item.title, screenFrame: model.crop == nil ? item.screenFrame : nil)
+        guard !finishing else { return }
+        let result = store.item(withID: item.id) ?? item
+        guard model.hasChanges else { return complete(action, with: result) }
+        // The marked-up image is a new clip; the original is left alone. Drawing it at full size
+        // and making the PNG take a moment on a large picture, so it's done off the main thread.
+        finishing = true
+        let renderer = model.renderer, marks = model.marks, crop = model.crop
+        // Pixelation is worked out once and kept by the renderer: done here first, so the
+        // canvas and the drawing below never work it out at the same time.
+        if marks.contains(where: { $0.kind == .pixelate }) { _ = renderer.pixelated() }
+        Task { @MainActor [weak self] in
+            let png = await Task.detached(priority: .userInitiated) {
+                renderer.render(marks, crop: crop).flatMap(MarkupRenderer.pngData)
+            }.value
+            guard let self else { return }
+            self.finishing = false
+            // Uncropped, it still floats over the spot it was taken from.
+            guard let png, let saved = self.store.addImage(png, title: self.item.title,
+                                                           screenFrame: crop == nil ? self.item.screenFrame : nil)
             else { return NSSound.beep() }
-            result = saved
+            self.complete(action, with: saved)
         }
+    }
+
+    /// Set while the marked-up image is being drawn, so a second Esc or ⌘C doesn't save it twice.
+    private var finishing = false
+
+    private func complete(_ action: Finish, with result: ClipItem) {
         switch action {
         case .copy: store.copyToPasteboard(result)
         case .float: onFloat(result)
@@ -967,7 +990,14 @@ struct ImageEditorView: View {
     @ObservedObject var model: ImageEditorModel
     @ObservedObject var settings: AppSettings
     let canvas: MarkupCanvasView
+    let tone: GlowTone
     let finish: (ImageEditorController.Finish) -> Void
+
+    /// The corners macOS gives a window with a title bar and no toolbar.
+    static var windowCornerRadius: CGFloat {
+        if #available(macOS 26.0, *) { return 16 }
+        return 10
+    }
 
     var body: some View {
         ZStack {
@@ -986,6 +1016,8 @@ struct ImageEditorView: View {
             }
         }
         .ignoresSafeArea()
+        // No rim of its own: macOS draws this titled window's edge, and a rim laid out in the
+        // content area sat below the title bar, cutting across the toolbar.
     }
 
     // MARK: Tools
@@ -1031,6 +1063,7 @@ struct ImageEditorView: View {
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
+        .lightRim(cornerRadius: 100, tone: tone)
         .glassCapsule()
     }
 
@@ -1061,6 +1094,7 @@ struct ImageEditorView: View {
                 .help("Fit in window (⌘0). Pinch or ⌘ scroll to zoom")
             }
             .padding(.horizontal, 6)
+            .lightRim(cornerRadius: 100, tone: tone)
             .glassCapsule()
 
             Spacer()
@@ -1079,6 +1113,7 @@ struct ImageEditorView: View {
                 CapsuleButton(title: "Done", key: "↩", prominent: true) { finish(.save) }
             }
             .padding(4)
+            .lightRim(cornerRadius: 100, tone: tone)
             .glassCapsule()
         }
     }
@@ -1118,7 +1153,9 @@ private struct ToolButton: View {
                         .padding(.bottom, 2)
                 }
                 .foregroundStyle(selected ? Color.white : Color.primary)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(selected ? Color.accentColor : .clear))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(selected ? Color.accentColor : .clear)
+                    // Lit like the other selected keys and chips.
+                    .shadow(color: Color.accentColor.opacity(selected ? 0.35 : 0), radius: 5, y: 1))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

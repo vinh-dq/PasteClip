@@ -104,9 +104,10 @@ public final class ClipStore: ObservableObject {
         if let string = pasteboard.string(forType: .string), !Self.isBlank(string) {
             return textItem(string, rich: richData(in: types))
         }
-        if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
-           let image = NSImage(data: data),
-           let png = image.pngData {
+        // A PNG is kept as it came; only TIFF is turned into one. Decoding a large screenshot
+        // and encoding it again froze the app for a moment on every copy.
+        if let png = pasteboard.data(forType: .png).flatMap({ Self.isPNG($0) ? $0 : nil })
+            ?? pasteboard.data(forType: .tiff).flatMap({ NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }) {
             var item = ClipItem(kind: .image)
             let name = "\(item.id.uuidString).png"
             guard (try? png.write(to: imageDir.appendingPathComponent(name))) != nil else { return nil }
@@ -447,10 +448,6 @@ public final class ClipStore: ObservableObject {
         return insert(item)
     }
 
-    public func togglePin(_ item: ClipItem) {
-        update(item.id) { $0.pinned.toggle() }
-    }
-
     public func setTitle(_ item: ClipItem, _ title: String) {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         update(item.id) { $0.title = t.isEmpty ? nil : t }
@@ -673,14 +670,28 @@ public final class ClipStore: ObservableObject {
     private var pinboardsURL: URL { directory.appendingPathComponent("pinboards.json") }
 
     private func load() {
-        if let data = try? Data(contentsOf: historyURL),
-           let decoded = try? JSONDecoder().decode([ClipItem].self, from: data) {
-            items = decoded.sorted { $0.date > $1.date }
+        items = Self.read(ClipItem.self, from: historyURL).sorted { $0.date > $1.date }
+        pinboards = Self.read(Pinboard.self, from: pinboardsURL)
+    }
+
+    /// The entries of a saved list, read one by one: one that can't be read is left out instead
+    /// of losing the whole list (the next save would then write an empty one over it). When
+    /// anything can't be read, the file is first kept beside it as `<name>.<date>.bak`.
+    static func read<T: Decodable>(_ type: T.Type, from url: URL) -> [T] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let entries = try? JSONDecoder().decode([Lenient<T>].self, from: data)
+        let values = entries?.compactMap(\.value) ?? []
+        if values.count != entries?.count {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            try? FileManager.default.copyItem(at: url, to: url.appendingPathExtension("\(stamp).bak"))
         }
-        if let data = try? Data(contentsOf: pinboardsURL),
-           let decoded = try? JSONDecoder().decode([Pinboard].self, from: data) {
-            pinboards = decoded
-        }
+        return values
+    }
+
+    /// An entry that's nil when it can't be read, so the others still are.
+    private struct Lenient<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws { value = try? T(from: decoder) }
     }
 
     /// Saves soon, off the main thread. Saves made close together are written once.
@@ -705,6 +716,13 @@ public final class ClipStore: ObservableObject {
         if let data = try? JSONEncoder().encode(pinboards) {
             try? data.write(to: pinboardsURL, options: .atomic)
         }
+    }
+}
+
+extension ClipStore {
+    /// Starts with the PNG signature.
+    static func isPNG(_ data: Data) -> Bool {
+        data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     }
 }
 

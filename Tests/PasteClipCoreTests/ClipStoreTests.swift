@@ -56,10 +56,16 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
     #expect(store.items.isEmpty)
 }
 
+/// A clip pinned before Pin was removed, which is still kept.
+private func pinned(_ item: ClipItem) -> ClipItem {
+    var item = item
+    item.pinned = true
+    return item
+}
+
 @Test func deduplicatesAndKeepsPin() {
     let (store, _, _) = makeStore()
-    store.insert(ClipItem(kind: .text, text: "a"))
-    store.togglePin(store.items[0])
+    store.insert(pinned(ClipItem(kind: .text, text: "a")))
     store.insert(ClipItem(kind: .text, text: "b"))
     store.insert(ClipItem(kind: .text, text: "a"))
 
@@ -70,8 +76,7 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
 @Test func trimsUnpinnedOnly() {
     let (store, _, _) = makeStore()
     store.historyLimit = 2
-    store.insert(ClipItem(kind: .text, text: "pinned"))
-    store.togglePin(store.items[0])
+    store.insert(pinned(ClipItem(kind: .text, text: "pinned")))
     for t in ["1", "2", "3"] { store.insert(ClipItem(kind: .text, text: t)) }
 
     #expect(store.items.map(\.text) == ["3", "2", "pinned"])
@@ -79,8 +84,7 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
 
 @Test func clearHistoryKeepsPinned() {
     let (store, _, _) = makeStore()
-    store.insert(ClipItem(kind: .text, text: "keep"))
-    store.togglePin(store.items[0])
+    store.insert(pinned(ClipItem(kind: .text, text: "keep")))
     store.insert(ClipItem(kind: .text, text: "drop"))
     store.clearHistory()
 
@@ -100,8 +104,7 @@ private func makeStore() -> (ClipStore, NSPasteboard, URL) {
 
 @Test func persistsHistoryAcrossLaunches() {
     let (store, pb, dir) = makeStore()
-    store.insert(ClipItem(kind: .link, text: "https://swift.org"))
-    store.togglePin(store.items[0])
+    store.insert(pinned(ClipItem(kind: .link, text: "https://swift.org")))
     store.flush()
 
     let reloaded = ClipStore(directory: dir, pasteboard: pb)
@@ -654,4 +657,24 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
     store.delete([store.items[0], store.items[2]])
     #expect(store.items.map(\.text) == ["c", "a"])
     #expect(store.stack.isEmpty)
+}
+
+@Test func anUnreadableClipDoesNotLoseTheHistory() throws {
+    let (store, pb, dir) = makeStore()
+    store.insert(ClipItem(kind: .text, text: "keep me"))
+    store.flush()
+    let url = dir.appendingPathComponent("history.json")
+    // One entry a later version wrote in a way this one can't read.
+    var list = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [Any])
+    list.append(["kind": "hologram"])
+    try JSONSerialization.data(withJSONObject: list).write(to: url)
+    let reloaded = ClipStore(directory: dir, pasteboard: pb)
+    #expect(reloaded.items.map(\.text) == ["keep me"])
+    // The file as it was is kept, before a save writes over it.
+    let backups = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".bak") }
+    #expect(backups.count == 1)
+    // A file that isn't a list at all doesn't take the history down with it either.
+    try Data("not json".utf8).write(to: url)
+    #expect(ClipStore(directory: dir, pasteboard: pb).items.isEmpty)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".bak") }.count >= 1)
 }

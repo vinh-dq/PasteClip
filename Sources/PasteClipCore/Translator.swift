@@ -193,6 +193,15 @@ public enum Translator {
         }
     }
 
+    /// The translation with the original's line breaks: a service that answers lines a blank line
+    /// apart (Apple does) when the original had none gets them closed up again.
+    public static func keepingLineBreaks(of original: String, in translation: String) -> String {
+        guard !original.contains("\n\n"), translation.contains("\n\n") else { return translation }
+        return translation.split(separator: "\n", omittingEmptySubsequences: true)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .joined(separator: "\n")
+    }
+
     /// `text` in pieces of at most `limit` characters, cut between lines where possible.
     /// Joining the pieces with line breaks gives the text back.
     public static func chunks(of text: String, limit: Int = 4500) -> [String] {
@@ -350,9 +359,9 @@ public struct WebTranslator {
             request.setValue("application/x-www-form-urlencoded;charset=utf-8", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data("q=\(Self.formEncoded(text))".utf8)
         case .googleCloud:
-            var url = URLComponents(string: "https://translation.googleapis.com/language/translate/v2")!
-            url.queryItems = [.init(name: "key", value: key)]
-            request = URLRequest(url: url.url!)
+            // The key goes in a header, not the address, which proxies and logs keep.
+            request = URLRequest(url: URL(string: "https://translation.googleapis.com/language/translate/v2")!)
+            request.setValue(key, forHTTPHeaderField: "X-goog-api-key")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Self.json(["q": [text], "target": code, "format": "text"])
         case .deepL:

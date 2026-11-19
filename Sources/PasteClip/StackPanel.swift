@@ -1,13 +1,18 @@
 import AppKit
+import Combine
 import PasteClipCore
 import SwiftUI
 
 /// Small floating list of the paste stack, shown in the top-right corner of the screen with the
-/// pointer while stack mode is on.
+/// pointer while stack mode is on. As tall as what it lists, keeping its top edge where it is.
 final class StackController {
     private let panel: NSPanel
     private let settings: AppSettings
-    private let size = NSSize(width: 290, height: 300)
+    private let size = NSSize(width: StackView.width, height: 120)
+    private let hosting: NSHostingView<StackView>
+    private var subscription: AnyCancellable?
+    private let tone = GlowTone()
+    private lazy var halo = GlowHalo(around: panel, kind: .panel, cornerRadius: StackView.cornerRadius, tone: tone)
 
     init(store: ClipStore, settings: AppSettings) {
         self.settings = settings
@@ -21,13 +26,26 @@ final class StackController {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        let hosting = NSHostingView(rootView: StackView(store: store, settings: settings))
+        hosting = NSHostingView(rootView: StackView(store: store, settings: settings, tone: tone))
         // Rounded as its glass, so the window's shadow is too.
         hosting.wantsLayer = true
         hosting.layer?.cornerRadius = StackView.cornerRadius
         hosting.layer?.cornerCurve = .continuous
         hosting.layer?.masksToBounds = true
         panel.contentView = hosting
+        // After the list has been laid out with its new clips.
+        subscription = store.$stack.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            DispatchQueue.main.async { self?.fit() }
+        }
+    }
+
+    private func fit() {
+        guard panel.isVisible else { return }
+        hosting.layoutSubtreeIfNeeded()
+        let height = hosting.fittingSize.height
+        guard height != panel.frame.height else { return }
+        let top = panel.frame.maxY
+        panel.setFrame(NSRect(x: panel.frame.minX, y: top - height, width: panel.frame.width, height: height), display: true)
     }
 
     func setVisible(_ visible: Bool) {
@@ -35,16 +53,24 @@ final class StackController {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
         let frame = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: frame.maxX - size.width - 16, y: frame.maxY - size.height - 16))
+        hosting.layoutSubtreeIfNeeded()
+        let height = hosting.fittingSize.height
+        panel.setFrame(NSRect(x: frame.maxX - size.width - 16, y: frame.maxY - height - 16, width: size.width, height: height),
+                       display: false)
         panel.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
         panel.orderFrontRegardless()
+        halo.syncVisibility()
     }
 }
 
 struct StackView: View {
     static let cornerRadius: CGFloat = 18
+    static let width: CGFloat = 290
+    /// The tallest the list gets; more clips scroll.
+    static let maxListHeight: CGFloat = 220
     @ObservedObject var store: ClipStore
     @ObservedObject var settings: AppSettings
+    let tone: GlowTone
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -62,18 +88,23 @@ struct StackView: View {
                 Text("Copy things one after another. They line up here, then paste them in the same order.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            StackRow(index: index, item: item, text: item.title ?? preview(item)) {
-                                store.removeFromStack(item)
-                            }
+                let list = VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        StackRow(index: index, item: item, text: item.title ?? preview(item)) {
+                            store.removeFromStack(item)
                         }
                     }
                 }
-                .scrollIndicators(.never)
+                // Its own height while it fits, then capped and scrolling.
+                ViewThatFits(in: .vertical) {
+                    list
+                    ScrollView { list }.scrollIndicators(.never)
+                }
+                .frame(maxHeight: Self.maxListHeight)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 6) {
@@ -88,7 +119,8 @@ struct StackView: View {
             }
         }
         .padding(14)
-        .frame(width: 290, height: 300)
+        .frame(width: Self.width)
+        .lightRim(cornerRadius: Self.cornerRadius, tone: tone)
         .background(GlassBackground(cornerRadius: Self.cornerRadius))
     }
 

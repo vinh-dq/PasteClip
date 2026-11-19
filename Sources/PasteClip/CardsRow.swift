@@ -45,9 +45,6 @@ struct CardsRow: View {
                 .background { ScrollFollower(selection: selection, items: items, proxy: proxy) }
             }
             .overlay(alignment: .bottom) { SelectionHint(selection: selection) }
-            .overlay(alignment: .bottom) {
-                ShelfKeysHint(keys: state.heldKeys, selection: selection, translateKey: settings.translateHotKey?.display)
-            }
         }
     }
 
@@ -190,7 +187,6 @@ private struct CardMenu: View {
             }
         }
         Divider()
-        Button(item.pinned ? "Unpin" : "Pin") { store.togglePin(item) }
         Menu("Pinboard") {
             ForEach(store.pinboards) { board in
                 Toggle(board.name, isOn: Binding(get: { item.pinboardID == board.id },
@@ -383,9 +379,9 @@ private struct SelectionHint: View {
     }
 }
 
-/// The shelf's keys, shown while the quick-paste modifier is held a moment, next to the cards'
-/// numbers: the keys are there to find without cluttering the shelf the rest of the time.
-private struct ShelfKeysHint: View {
+/// The shelf's keys, shown in its top bar while the quick-paste modifier is held a moment, as
+/// the cards show their numbers: there to find without cluttering the shelf the rest of the time.
+struct ShelfKeysHint: View {
     @ObservedObject var keys: HeldKeys
     @ObservedObject var selection: SelectionModel
     let translateKey: String?
@@ -396,7 +392,6 @@ private struct ShelfKeysHint: View {
                 hint("Space", "Preview")
                 hint("⌘E", "Edit")
                 hint("⌘R", "Rename")
-                hint("⌘P", "Pin")
                 if let translateKey { hint(translateKey, "Translate") }
                 hint("⌘C", "Copy")
                 hint("⌘⌫", "Delete")
@@ -409,7 +404,6 @@ private struct ShelfKeysHint: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
             .glassCapsule()
-            .padding(.bottom, 2)
             .allowsHitTesting(false)
             .transition(.opacity)
         }

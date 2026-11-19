@@ -211,3 +211,125 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
     settings.resetShortcuts()
     #expect(AppSettings(defaults: defaults).translateImageKey == .translateImage)
 }
+
+@Test func lettersOnAGradientAreTakenOutWithoutAPatch() throws {
+    // A horizontal gradient from dark red to light yellow, with black text across it.
+    let width = 400, height = 100
+    let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              colors: [CGColor(srgbRed: 0.5, green: 0.1, blue: 0.1, alpha: 1),
+                                       CGColor(srgbRed: 1, green: 0.95, blue: 0.6, alpha: 1)] as CFArray, locations: [0, 1])!
+    ctx.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: 0), options: [])
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+    ("MMMMMMMMMM" as NSString).draw(at: NSPoint(x: 40, y: 34), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 28),
+                                                                           .foregroundColor: NSColor.black])
+    NSGraphicsContext.restoreGraphicsState()
+    let image = try #require(ctx.makeImage())
+    let block = TextBlock(text: "MMMMMMMMMM", rect: CGRect(x: 38, y: 30, width: 270, height: 38), lineHeight: 38, lineCount: 1)
+    let translated = try #require(ImageTranslation.render(image, blocks: [block], translations: ["."]))
+    let rep = NSBitmapImageRep(cgImage: translated)
+    // Along the middle of where the letters were, the gradient carries on: each point close to
+    // the gradient's colour there (read just above the text), the left end darker than the right.
+    let original = NSBitmapImageRep(cgImage: image)
+    for x in [120, 200, 290] {
+        let now = try #require(rep.colorAt(x: x, y: 50)?.usingColorSpace(.sRGB))
+        let above = try #require(original.colorAt(x: x, y: 12)?.usingColorSpace(.sRGB))
+        #expect(abs(now.redComponent - above.redComponent) < 0.06, "x \(x)")
+        #expect(abs(now.greenComponent - above.greenComponent) < 0.06, "x \(x)")
+    }
+}
+
+@Test func aTurnedLineKeepsItsAngle() throws {
+    // A line turned 30° clockwise on the image (Vision's corners, origin at the bottom left).
+    let angle = CGFloat.pi / 6
+    let centre = CGPoint(x: 500, y: 500), w: CGFloat = 300, h: CGFloat = 40
+    func corner(_ dx: CGFloat, _ dy: CGFloat) -> CGPoint {
+        let x = centre.x + dx * cos(angle) - dy * sin(angle), y = centre.y + dx * sin(angle) + dy * cos(angle)
+        return CGPoint(x: x / 1000, y: 1 - y / 1000)
+    }
+    let quad = [corner(-w / 2, -h / 2), corner(w / 2, -h / 2), corner(w / 2, h / 2), corner(-w / 2, h / 2)]
+    var turned = line("Grand opening sale", CGRect(x: 350, y: 400, width: 300, height: 200))
+    turned.quad = quad
+    let blocks = ImageTranslation.blocks(from: [turned, line("Open daily", CGRect(x: 350, y: 640, width: 120, height: 24))],
+                                         size: CGSize(width: 1000, height: 1000))
+    let block = try #require(blocks.first { $0.text == "Grand opening sale" })
+    #expect(abs(block.angle - angle) < 0.01)
+    #expect(abs(block.rect.width - w) < 1 && abs(block.rect.height - h) < 1)
+    #expect(abs(block.rect.midX - centre.x) < 1 && abs(block.rect.midY - centre.y) < 1)
+    #expect(blocks.count == 2)
+}
+
+@Test func verticalColumnsBecomeOneBlockReadFromTheRight() {
+    func column(_ text: String, x: CGFloat) -> TextRecognizer.Line {
+        TextRecognizer.Line(text: text, box: CGRect(x: x / 1000, y: 1 - 400.0 / 1000, width: 0.03, height: 0.3), script: .hanAndKana)
+    }
+    let blocks = ImageTranslation.blocks(from: [column("右の列です", x: 540), column("左の列です", x: 500),
+                                                column("離れた列", x: 100)],
+                                         size: CGSize(width: 1000, height: 1000))
+    #expect(blocks.count == 2)
+    let bubble = blocks.first { $0.lineCount == 2 }
+    #expect(bubble?.text == "右の列です左の列です")
+    #expect(bubble?.vertical == true)
+    // Read from the bottom up, as Vision gives a column, with "ー" taken for an I.
+    var upward = column("ルIセな別特", x: 300)
+    upward.quad = [CGPoint(x: 0.3, y: 0.3), CGPoint(x: 0.3, y: 0.6), CGPoint(x: 0.33, y: 0.6), CGPoint(x: 0.33, y: 0.3)]
+    #expect(ImageTranslation.blocks(from: [upward], size: CGSize(width: 1000, height: 1000)).first?.text == "特別なセール")
+    // A digit after a kanji stays a digit.
+    #expect(ImageTranslation.blocks(from: [column("第1章です", x: 300)], size: CGSize(width: 1000, height: 1000)).first?.text == "第1章です")
+}
+
+@Test func paragraphsVisionFoundKeepColumnsApart() {
+    // Two columns of one sentence each, close enough that the lines alone would join them.
+    let lines = [
+        line("The first column runs on and on across", CGRect(x: 40, y: 100, width: 400, height: 24)),
+        line("and ends here.", CGRect(x: 40, y: 130, width: 160, height: 24)),
+    ]
+    let size = CGSize(width: 1000, height: 1000)
+    #expect(ImageTranslation.blocks(from: lines, size: size).count == 1)
+    // Vision says they're different paragraphs (boxes from the bottom left).
+    let regions = [CGRect(x: 0.03, y: 1 - 0.126, width: 0.42, height: 0.03), CGRect(x: 0.03, y: 1 - 0.156, width: 0.42, height: 0.03)]
+    #expect(ImageTranslation.blocks(from: lines, size: size, regions: regions).count == 2)
+    // And a centred title over two lines that Vision calls one paragraph joins.
+    let title = [line("Welcome to the", CGRect(x: 420, y: 300, width: 160, height: 30)),
+                 line("Summer Festival 2026", CGRect(x: 370, y: 336, width: 260, height: 30))]
+    #expect(ImageTranslation.blocks(from: title, size: size, regions: [CGRect(x: 0.36, y: 1 - 0.37, width: 0.28, height: 0.08)]).count == 1)
+    #expect(ImageTranslation.blocks(from: title, size: size).count == 2)
+}
+
+@Test func codesAndUnsureReadingsStayAsTheyAre() {
+    for code in ["SKU-48213", "v2.4.1", "#3A7BD5", "12kg", "x", "→ 3", "2024/11/19"] {
+        #expect(ImageTranslation.language(of: code, allowed: ["en", "vi"]) == nil, "\(code)")
+    }
+    for words in ["Open", "iPhone15 Pro", "COVID-19 vaccine", "日"] {
+        #expect(ImageTranslation.language(of: words, allowed: ["en", "vi", "ja"]) != nil, "\(words)")
+    }
+    var unsure = line("lIlI", CGRect(x: 40, y: 100, width: 100, height: 24))
+    unsure.confidence = 0.1
+    #expect(ImageTranslation.blocks(from: [unsure], size: CGSize(width: 1000, height: 1000)).isEmpty)
+}
+
+@Test func eachTranslationSaysWhereItWentAndWhatItReplaced() throws {
+    let ctx = CGContext(data: nil, width: 400, height: 200, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(.white)
+    ctx.fill(CGRect(x: 0, y: 0, width: 400, height: 200))
+    let image = try #require(ctx.makeImage())
+    let blocks = [TextBlock(text: "Open", rect: CGRect(x: 20, y: 20, width: 60, height: 24), lineHeight: 24, lineCount: 1),
+                  TextBlock(text: "Sale", rect: CGRect(x: 200, y: 100, width: 80, height: 30), lineHeight: 30, lineCount: 1, angle: .pi / 4),
+                  TextBlock(text: "SKU-1", rect: CGRect(x: 20, y: 160, width: 60, height: 20), lineHeight: 20, lineCount: 1)]
+    let spots = try #require(ImageTranslation.rendered(image, blocks: blocks, translations: ["Mở cửa hằng ngày", "Giảm giá", ""])?.spots)
+    // A block left as it was can be copied from too.
+    #expect(spots.map(\.original) == ["Open", "Sale", "SKU-1"])
+    #expect(spots[2].translation.isEmpty && spots[2].contains(CGPoint(x: 50, y: 170)))
+    #expect(spots[0].translation == "Mở cửa hằng ngày")
+    // A longer translation's spot runs on past the original.
+    #expect(spots[0].rect.maxX > 80)
+    // A turned one is found along its angle, not in its unturned box's corner.
+    let turned = spots[1]
+    #expect(turned.contains(CGPoint(x: turned.pivot.x, y: turned.pivot.y)))
+    let along = CGPoint(x: turned.pivot.x + 30 * cos(.pi / 4), y: turned.pivot.y + 30 * sin(.pi / 4))
+    #expect(turned.contains(along))
+    #expect(!turned.contains(CGPoint(x: turned.rect.minX + 2, y: turned.rect.minY + 2)))
+}

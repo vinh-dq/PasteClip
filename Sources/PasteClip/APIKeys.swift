@@ -75,7 +75,9 @@ final class APIKeys: ObservableObject {
         var loaded: [TranslationService: String] = [:]
         switch status {
         case errSecSuccess:
-            let names = (result as? Data).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+            // An item that can't be read counts as refused: saving would write over the keys in it.
+            guard let names = (result as? Data).flatMap({ try? JSONDecoder().decode([String: String].self, from: $0) })
+            else { return false }
             for (name, key) in names { if let service = TranslationService(rawValue: name) { loaded[service] = key } }
         case errSecItemNotFound:
             break
@@ -118,6 +120,9 @@ final class APIKeys: ObservableObject {
         }
         // An old item is read (which can ask for the password) only for a key not found yet.
         let accounts = Self.legacyItemAccounts()
+        // Old items that couldn't be read (access denied at the prompt) are left as they are,
+        // to move another time: removing them would lose their keys.
+        var unread: Set<String> = []
         for account in accounts {
             guard let service = TranslationService(rawValue: account), merged[service] == nil else { continue }
             var query = Self.query(account: account)
@@ -127,12 +132,14 @@ final class APIKeys: ObservableObject {
             if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
                let key = (result as? Data).flatMap({ String(data: $0, encoding: .utf8) }), !key.isEmpty {
                 merged[service] = key
+            } else {
+                unread.insert(account)
             }
         }
         guard !accounts.isEmpty || fromFile != nil else { return }
         guard merged == keys || write(merged) else { return }
         keys = merged
-        for account in accounts { SecItemDelete(Self.query(account: account) as CFDictionary) }
+        for account in accounts where !unread.contains(account) { SecItemDelete(Self.query(account: account) as CFDictionary) }
         try? FileManager.default.removeItem(at: legacyFile)
     }
 

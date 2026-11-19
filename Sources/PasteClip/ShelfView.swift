@@ -129,6 +129,8 @@ final class ShelfState: ObservableObject {
     @Published var textInputActive = false
     /// The clip whose title is being edited on its card. Keys go to the title field meanwhile.
     @Published var renamingID: UUID?
+    /// A pinboard's name is being typed in its popover (new, edit or delete). Keys go there.
+    var pinboardFormOpen = false
     /// Saves the text being edited in the popup; set while editing.
     var commitEdit: (() -> Void)?
     /// Clips matching the query. Recomputed only when the clips or the query change.
@@ -271,7 +273,6 @@ final class ShelfState: ObservableObject {
         textInputActive = false
         renamingID = nil
         commitEdit = nil
-        focusToken = UUID()
     }
 
     func reset() {
@@ -286,6 +287,8 @@ struct ShelfView: View {
     @ObservedObject var state: ShelfState
     @ObservedObject var store: ClipStore
     @ObservedObject var settings: AppSettings
+    let tone: GlowTone
+    @Environment(\.colorScheme) private var colorScheme
     @FocusState private var searchFocused: Bool
     @StateObject private var newBoardShown = ViewState(false)
     @StateObject private var editingBoard = ViewState<Pinboard?>(nil)
@@ -297,6 +300,11 @@ struct ShelfView: View {
     var body: some View {
         VStack(spacing: 12) {
             topBar
+                // Over the bar's end (its actions and the last tabs) rather than over the cards.
+                .overlay(alignment: .trailing) {
+                    ShelfKeysHint(keys: state.heldKeys, selection: state.selectionModel,
+                                  translateKey: settings.translateHotKey?.display)
+                }
             Group {
                 if state.composing {
                     ComposeView(state: state, store: store)
@@ -309,12 +317,15 @@ struct ShelfView: View {
         .padding(.horizontal, 22)
         .padding(.top, 12)
         .padding(.bottom, 14)
+        .lightRim(cornerRadius: 26, tone: tone)
         .background(GlassBackground(cornerRadius: 26).ignoresSafeArea())
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .glassEdge(cornerRadius: 26)
         .onChange(of: state.focusToken) { searchFocused = true }
+        .onChange(of: newBoardShown.value) { syncPinboardForm() }
+        .onChange(of: editingBoard.value?.id) { syncPinboardForm() }
+        .onChange(of: deletingBoard.value?.id) { syncPinboardForm() }
         .onChange(of: state.query) { state.selection = 0 }
-        .onAppear { searchFocused = true }
     }
 
     // MARK: - Top bar
@@ -336,6 +347,7 @@ struct ShelfView: View {
                     .help("Paste stack")
             }
             newBoardButton
+            appearanceButton
             moreMenu
         }
         .font(.system(size: 13))
@@ -420,6 +432,26 @@ struct ShelfView: View {
         }
         .padding(14)
         .frame(width: 260)
+    }
+
+    /// While a pinboard popover is open, the shelf lets its keys through (Space, Return…).
+    private func syncPinboardForm() {
+        state.pinboardFormOpen = newBoardShown.value || editingBoard.value != nil || deletingBoard.value != nil
+    }
+
+    /// Light ↔ dark for all of PasteClip, the other way from how it looks now.
+    private var appearanceButton: some View {
+        let dark = colorScheme == .dark
+        return Button { settings.appearance = dark ? .light : .dark } label: {
+            Image(systemName: dark ? "sun.max" : "moon")
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+                .glassCircle()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(dark ? "Light appearance" : "Dark appearance")
+        .modifier(Faint())
     }
 
     private var newBoardButton: some View {

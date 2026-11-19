@@ -1,13 +1,12 @@
 import Foundation
 
 public enum TypeFilter: String, CaseIterable, Identifiable {
-    case all, pinned, text, link, image, file, color
+    case all, text, link, image, file, color
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .all: return "All Types"
-        case .pinned: return "Pinned"
         case .text: return "Text"
         case .link: return "Links"
         case .image: return "Images"
@@ -19,7 +18,6 @@ public enum TypeFilter: String, CaseIterable, Identifiable {
     public func matches(_ item: ClipItem) -> Bool {
         switch self {
         case .all: return true
-        case .pinned: return item.pinned
         case .text: return item.kind == .text
         case .link: return item.kind == .link
         case .image: return item.isImage

@@ -40,6 +40,8 @@ final class ShelfController {
     private let margin: CGFloat = 10
     private let popup: PreviewPopupController
     private let toast = Toast()
+    private let tone = GlowTone()
+    private lazy var halo = GlowHalo(around: panel, kind: .panel, cornerRadius: 26, tone: tone)
     private static var askedForTrust = false
     private var subscriptions = Set<AnyCancellable>()
 
@@ -74,7 +76,7 @@ final class ShelfController {
             self?.hide()
             openSettings()
         }
-        panel.contentView = HostingView(rootView: ShelfView(state: state, store: store, settings: settings))
+        panel.contentView = HostingView(rootView: ShelfView(state: state, store: store, settings: settings, tone: tone))
         observePreview()
     }
 
@@ -123,8 +125,11 @@ final class ShelfController {
     func showPreview() { state.togglePreview() }
 
     func show() {
+        hides += 1
         state.reset()
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
+        // No screen at all (a closed lid with no display attached): nothing to show on.
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+                ?? NSScreen.main ?? NSScreen.screens.first else { return }
         // The whole screen, so the shelf sits at the bottom edge over the Dock (the panel's level is
         // above the Dock's); at the top it stays below the menu bar.
         let frame = screen.frame
@@ -137,6 +142,9 @@ final class ShelfController {
         panel.alphaValue = 0
         panel.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
         panel.makeKeyAndOrderFront(nil)
+        // The search field waits for a click (or ⌘F): typing doesn't search until then.
+        panel.makeFirstResponder(nil)
+        halo.syncVisibility()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -164,14 +172,35 @@ final class ShelfController {
     func hide() {
         guard panel.isVisible else { return }
         removeMonitors()
+        // However the shelf closes (a click in another app, its shortcut, pasting), an edit in
+        // progress is saved, as a click outside the popup saves it.
+        state.commitEdit?()
         state.closePreview()
         popup.hide()
+        hides += 1
+        let hide = hides
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.1
             panel.animator().alphaValue = 0
-        }, completionHandler: { [panel] in
-            panel.orderOut(nil)
+        }, completionHandler: { [weak self] in
+            // Opened again while fading out: it stays.
+            guard let self, self.hides == hide else { return }
+            self.panel.orderOut(nil)
         })
+    }
+
+    /// Counts hides, so a fade-out that ends after the shelf was opened again leaves it up.
+    private var hides = 0
+
+    /// The shelf, its popup, or a window of theirs (a pinboard's popover).
+    private func isShelf(_ window: NSWindow) -> Bool {
+        if window.className.contains("Popover") { return true }
+        var current: NSWindow? = window
+        while let w = current {
+            if w === panel || w === popup.panel { return true }
+            current = w.parent
+        }
+        return false
     }
 
     private func editImage(_ item: ClipItem) {
@@ -237,9 +266,16 @@ final class ShelfController {
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.hide()
         }
+        // The global monitor only sees other apps' windows: a click on another of PasteClip's
+        // (a floating image, the translation panel, the image editor) closes the shelf too.
         // Close the popup when the user clicks the shelf (or another card) outside it, keeping any edit.
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self, self.state.previewing, event.window !== self.popup.panel else { return event }
+            guard let self else { return event }
+            if let window = event.window, !self.isShelf(window) {
+                self.hide()
+                return event
+            }
+            guard self.state.previewing, event.window !== self.popup.panel else { return event }
             self.state.commitEdit?()
             self.state.closePreview()
             return event
@@ -306,6 +342,8 @@ final class ShelfController {
 
     /// Returns true when the key was handled and shouldn't reach the focused text field.
     private func handle(_ event: NSEvent) -> Bool {
+        // Naming a pinboard in its popover: every key is for its field and buttons.
+        if state.pinboardFormOpen { return EditCommands.perform(event) }
         let typing = state.renamingID != nil || state.composing || state.textInputActive
         if typing, EditCommands.perform(event) { return true }
         // Renaming a card: every key goes to its title field (Return saves, Esc cancels).
@@ -396,7 +434,6 @@ final class ShelfController {
             if item.isTextual { state.editing = true } else { editImage(item) }
             return true
         }
-        if cmd, chars == "p", let item = state.selectedItem { store.togglePin(item); return true }
         // Swallow plain typing so it doesn't land in the hidden search field.
         return !cmd
     }
@@ -450,7 +487,12 @@ final class ShelfController {
         default: break
         }
 
-        guard cmd, let chars = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        guard cmd, let chars = event.charactersIgnoringModifiers?.lowercased() else {
+            // Typing goes to the search field once it's been clicked (or ⌘F); before that it's
+            // let go quietly, without a beep.
+            let typing = flags(event).isDisjoint(with: [.control, .option, .command])
+            return typing && !(panel.firstResponder is NSText)
+        }
         // Editing keys belong to the search field, which takes the shelf's typing.
         let searchSelection = (panel.firstResponder as? NSTextView)?.selectedRange().length ?? 0
         if ["v", "x", "z"].contains(chars) || (chars == "c" && searchSelection > 0) || (chars == "a" && !state.query.text.isEmpty) {
@@ -473,9 +515,6 @@ final class ShelfController {
             } else if let item = state.selectedItem {
                 editImage(item)
             }
-            return true
-        case "p":
-            if let item = state.selectedItem { store.togglePin(item) }
             return true
         case "c":
             copy(state.selectedItems)

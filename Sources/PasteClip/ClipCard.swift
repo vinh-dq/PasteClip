@@ -65,7 +65,7 @@ struct ClipCard: View, Equatable {
             .strokeBorder(board?.color ?? Color.primary.opacity(0.07), lineWidth: board == nil ? 0.5 : 2))
         // Flatten the card first so the shadow is drawn once, not for every layer inside it.
         .flattened(!renaming)
-        .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
+        .modifier(CardGlow())
         .onHover { inside in withAnimation(.easeOut(duration: 0.18)) { hovering.value = inside } }
         .onAppear {
             if showLinkPreview, item.kind == .link, let link = item.text { links.load(link) }
@@ -87,8 +87,8 @@ struct ClipCard: View, Equatable {
 
     private var symbol: String { item.isImage ? ClipKind.image.symbol : item.kind.symbol }
 
-    /// The app it came from and its name, or, without one, when it was copied. Pinned clips and
-    /// clips in the paste stack say so too. On a pinboard, the label takes the pinboard's colour.
+    /// The app it came from and its name, or, without one, when it was copied. Clips in the
+    /// paste stack say so too. On a pinboard, the label takes the pinboard's colour.
     private var label: some View {
         let tinted = board != nil && !renaming
         return HStack(spacing: 5) {
@@ -107,7 +107,6 @@ struct ClipCard: View, Equatable {
                     .lineLimit(1)
             }
             Group {
-                if item.pinned { Image(systemName: "pin.fill") }
                 if inStack { Image(systemName: "square.stack.3d.up.fill") }
             }
             .font(.system(size: 8.5))
@@ -511,13 +510,19 @@ struct PinboardEditor: View {
     let onSave: (String, Int) -> Void
     @StateObject private var name = ViewState("")
     @StateObject private var colorIndex = ViewState(0)
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(board == nil ? "New Pinboard" : "Edit Pinboard").font(.headline)
+            Text(board == nil ? "New Pinboard" : "Edit Pinboard").font(.system(size: 13, weight: .semibold))
             TextField("Name", text: $name.value)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 220)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .padding(.horizontal, 12)
+                .frame(width: 236, height: 30)
+                .background(Capsule().fill(Color(nsColor: .textBackgroundColor).opacity(0.7)))
+                .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 1.5))
+                .focused($nameFocused)
                 .onSubmit(save)
             HStack(spacing: 8) {
                 ForEach(Pinboard.palette.indices, id: \.self) { i in
@@ -528,9 +533,9 @@ struct PinboardEditor: View {
                         .onTapGesture { colorIndex.value = i }
                 }
             }
-            HStack {
+            HStack(spacing: 6) {
                 Spacer()
-                Button(board == nil ? "Create" : "Save", action: save)
+                CapsuleButton(title: board == nil ? "Create" : "Save", key: "↩", prominent: true, action: save)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.value.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -539,6 +544,8 @@ struct PinboardEditor: View {
         .onAppear {
             name.value = board?.name ?? ""
             colorIndex.value = board?.colorIndex ?? Int.random(in: 0..<Pinboard.palette.count)
+            // Ready to type the name at once.
+            DispatchQueue.main.async { nameFocused = true }
         }
     }
 
@@ -636,6 +643,24 @@ enum PinboardDrag {
     /// Reads the dragged pinboard's id and hands it over on the main thread. False if it isn't one.
     static func receive(_ providers: [NSItemProvider], _ handle: @escaping (UUID) -> Void) -> Bool {
         ClipDrag.receiveID(providers, of: type, handle)
+    }
+}
+
+/// The light around a card, as around the panels: on a dark screen a faint halo over its shadow,
+/// on a light one a white halo and only a faint shadow, so the card looks lit, not sunk in.
+private struct CardGlow: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        if colorScheme == .dark {
+            content
+                .shadow(color: .black.opacity(0.12), radius: 8, y: 3.6)
+                .shadow(color: .white.opacity(0.08), radius: 4.5)
+        } else {
+            content
+                .shadow(color: .white.opacity(0.9), radius: 5.4)
+                .shadow(color: Color(red: 0.16, green: 0.12, blue: 0.35).opacity(0.06), radius: 9, y: 4.5)
+        }
     }
 }
 

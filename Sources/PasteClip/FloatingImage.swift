@@ -4,6 +4,7 @@ import PasteClipCore
 import PasteClipSystem
 import ScriptingBridge
 import SwiftUI
+import VisionKit
 
 /// Images floated above every window, for keeping something in view while you work. Scrolling
 /// over one makes it clearer or fainter; pinching or ⌘-scrolling zooms; T shows it translated.
@@ -92,6 +93,16 @@ final class FloatingImages {
             guard let self, let window else { return }
             self.copy(window.shownClip, image: window.shownImage)
         }
+        // The text read in one part of the image, as text copied from the screen is: a clip
+        // from "Screen Text".
+        window.onCopyText = { [weak self] text in
+            guard let self else { return }
+            if let item = self.store.addText(text, source: "Screen Text") {
+                self.store.copyToPasteboard(item)
+            } else {
+                self.store.copyWithoutSaving(text)
+            }
+        }
         window.onTranslate = { [weak self, weak window] target in
             guard let self, let window else { return }
             self.translate(window, to: target)
@@ -125,13 +136,14 @@ final class FloatingImages {
                 }
                 let target = target ?? self.translator.defaultTarget(for: reading)
                 let image: CGImage
+                let spots: [ImageTranslation.Spot]
                 var problem: String?
                 if let done = window.translations[target] {
-                    image = done
+                    (image, spots) = done
                 } else {
-                    (image, problem) = try await self.translator.translate(window.original, reading: reading, to: target)
+                    (image, spots, problem) = try await self.translator.translate(window.original, reading: reading, to: target)
                     // Kept only when all of it went, so a language that failed is tried again next time.
-                    if problem == nil { window.translations[target] = image }
+                    if problem == nil { window.translations[target] = (image, spots) }
                 }
                 guard window.isCurrent(generation) else { return }
                 // The clip saved for another language is replaced; one saved by editing it, with
@@ -141,7 +153,7 @@ final class FloatingImages {
                     self.store.delete(old)
                 }
                 let clip = self.settings.saveImageTranslations ? self.save(image, of: window, in: target) : nil
-                window.showTranslation(image, clip: clip, target: target, problem: problem)
+                window.showTranslation(image, spots: spots, clip: clip, target: target, problem: problem)
             } catch {
                 guard window.isCurrent(generation) else { return }
                 window.translationFailed(error.localizedDescription)
@@ -151,7 +163,10 @@ final class FloatingImages {
 
     private func watchPinches() {
         if windows.isEmpty {
-            if let pinchTap { CGEvent.tapEnable(tap: pinchTap, enable: false) }
+            if let pinchTap {
+                CGEvent.tapEnable(tap: pinchTap, enable: false)
+                CFMachPortInvalidate(pinchTap)
+            }
             if let pinchSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), pinchSource, .commonModes) }
             pinchTap = nil
             pinchSource = nil
@@ -159,8 +174,12 @@ final class FloatingImages {
         }
         guard pinchTap == nil else { return }
         // Trackpad gestures arrive as CGEvent type 29; AppKit turns pinches among them into .magnify.
-        let gesture = CGEventMask(1) << 29 | CGEventMask(1) << CGEventType.keyDown.rawValue
-            | CGEventMask(1) << CGEventType.keyUp.rawValue
+        // Keys only with Accessibility, which handling them needs: listening to them without it
+        // would have macOS ask for Input Monitoring as well.
+        var gesture = CGEventMask(1) << 29
+        if Paster.isTrusted {
+            gesture |= CGEventMask(1) << CGEventType.keyDown.rawValue | CGEventMask(1) << CGEventType.keyUp.rawValue
+        }
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
                                           options: Paster.isTrusted ? .defaultTap : .listenOnly,
                                           eventsOfInterest: gesture, callback: { _, type, event, owner in
@@ -377,6 +396,9 @@ final class FloatingImageState: ObservableObject {
     @Published var showsTranslation = false
     /// The language of the translation, once there is one.
     @Published var language: String?
+    /// The image is narrower than the full strip: the readouts shrink to the zoom alone, so the
+    /// strip is about as wide as the image instead of sticking out on both sides.
+    @Published var compactStrip = false
 
     /// The strip shows: while the pointer is over the image or the strip (locked or not), or to say something.
     var showsStrip: Bool { hovering || stripHovering || flashing || status != nil }
@@ -432,8 +454,8 @@ final class FloatingImageWindow {
     private var generation = 0
     /// The text found in the image, once read.
     var reading: ImageTranslator.Reading?
-    /// Translations already drawn, by language.
-    var translations: [String: CGImage] = [:]
+    /// Translations already drawn, by language, with where each part went.
+    var translations: [String: (image: CGImage, spots: [ImageTranslation.Spot])] = [:]
     /// The pointer is over the image or its strip.
     var pointerOver: Bool { state.hovering || state.stripHovering }
     /// When the pointer last came onto the image or its strip.
@@ -446,13 +468,23 @@ final class FloatingImageWindow {
     private let baseSize: CGSize
     private let content: FloatingImageView
     private var strip: FloatStripPanel!
+    private var halo: GlowHalo?
+    private var stripHalo: GlowHalo?
+    private let stripTone = GlowTone()
     private var subscriptions = Set<AnyCancellable>()
     /// Hides the strip a moment after the pointer leaves, so it can cross from image to strip.
     private var hideStrip: DispatchWorkItem?
     private var flashTimer: Timer?
+    /// Where each part of the translation showing went, with its original.
+    private(set) var spots: [ImageTranslation.Spot] = []
+    /// The original of the part under the pointer, in a bubble of its own beside the image.
+    private var tip: FloatTipPanel?
+    private var tipTimer: Timer?
     var onClose: () -> Void = {}
     var onEdit: () -> Void = {}
     var onCopy: () -> Void = {}
+    /// Copies the text read in one part of the image.
+    var onCopyText: (String) -> Void = { _ in }
     /// Opens Google Translate's Images page for the original image, into a language.
     var onGoogle: (String) -> Void = { _ in }
     /// Asks for a translation into a language, or the first one the text isn't in.
@@ -497,7 +529,7 @@ final class FloatingImageWindow {
     // MARK: Strip
 
     private func setUpStrip() {
-        let view = FloatStrip(state: state,
+        var view = FloatStrip(state: state,
                               close: { [weak self] in self?.close() },
                               zoom: { [weak self] factor in
                                   guard let self else { return }
@@ -514,6 +546,7 @@ final class FloatingImageWindow {
                                   guard let self else { return }
                                   self.setLocked(!self.state.locked)
                               })
+        view.tone = stripTone
         strip = FloatStripPanel(strip: view)
         strip.hosting.onHover = { [weak self] inside in self?.state.stripHovering = inside }
         state.objectWillChange
@@ -533,6 +566,9 @@ final class FloatingImageWindow {
 
     /// Under the image, or above it when there's no room below; centred, on screen.
     private func placeStrip() {
+        let compact = panel.frame.width < 480
+        if state.compactStrip != compact { state.compactStrip = compact }
+        strip.hosting.layoutSubtreeIfNeeded()
         let size = strip.hosting.fittingSize
         let image = panel.frame
         let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? image
@@ -582,6 +618,10 @@ final class FloatingImageWindow {
         panel.addChildWindow(strip, ordered: .above)
         placeStrip()
         panel.orderFrontRegardless()
+        // A soft light around it, so it doesn't sink into what's behind it.
+        halo = GlowHalo(around: panel, kind: .picture, cornerRadius: 10)
+        halo?.intensity = state.opacity
+        stripHalo = GlowHalo(around: strip, kind: .panel, cornerRadius: 15, tone: stripTone)
         panel.makeKey()
         panel.makeFirstResponder(content)
         NSAnimationContext.runAnimationGroup { ctx in
@@ -593,6 +633,9 @@ final class FloatingImageWindow {
 
     func close() {
         flashTimer?.invalidate()
+        content.stopAnalysing()
+        hover(nil)
+        if let tip { panel.removeChildWindow(tip); tip.orderOut(nil) }
         hideStrip?.cancel()
         subscriptions.removeAll()
         panel.removeChildWindow(strip)
@@ -600,8 +643,10 @@ final class FloatingImageWindow {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             panel.animator().alphaValue = 0
-        }, completionHandler: { [panel] in
+        }, completionHandler: { [panel, self] in
             panel.orderOut(nil)
+            halo = nil
+            stripHalo = nil
         })
         onClose()
         if state.locked { state.locked = false; onLockChange() }
@@ -642,6 +687,7 @@ final class FloatingImageWindow {
         guard opacity != state.opacity else { return }
         state.opacity = opacity
         content.setImageOpacity(opacity)
+        halo?.intensity = opacity
         panel.invalidateShadow()
         flash()
     }
@@ -674,8 +720,10 @@ final class FloatingImageWindow {
     func isCurrent(_ generation: Int) -> Bool { generation == self.generation }
 
     /// `problem` says what part couldn't be translated, if any.
-    func showTranslation(_ image: CGImage, clip: ClipItem?, target: String, problem: String? = nil) {
+    func showTranslation(_ image: CGImage, spots: [ImageTranslation.Spot], clip: ClipItem?, target: String, problem: String? = nil) {
         translated = image
+        self.spots = spots
+        content.refreshHover()
         translatedClip = clip
         state.status = nil
         state.language = target
@@ -704,6 +752,59 @@ final class FloatingImageWindow {
         guard showing != state.showsTranslation else { return }
         state.showsTranslation = showing
         content.setImage(showing ? translated! : original)
+        content.refreshHover()
+    }
+
+    // MARK: Parts of the translation
+
+    /// Shows the original of a part of the translation above it (below it near the top of the
+    /// screen), or hides it for nil. `rect` is the part on screen.
+    func hover(_ spot: ImageTranslation.Spot?, at rect: NSRect = .zero) {
+        guard let spot else {
+            tipTimer?.invalidate()
+            if let tip { fade(tip, to: 0) }
+            return
+        }
+        let tip = self.tip ?? {
+            let made = FloatTipPanel()
+            made.sharingType = panel.sharingType
+            panel.addChildWindow(made, ordered: .above)
+            self.tip = made
+            return made
+        }()
+        tipTimer?.invalidate()
+        tip.model.original = spot.original
+        tip.model.copied = false
+        tip.hosting.layoutSubtreeIfNeeded()
+        let size = tip.hosting.fittingSize
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? rect
+        let gap: CGFloat = 8
+        var y = rect.maxY + gap
+        if y + size.height > visible.maxY { y = rect.minY - gap - size.height }
+        let x = min(max(rect.minX, visible.minX + 4), visible.maxX - size.width - 4)
+        tip.setFrame(NSRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height), display: true)
+        fade(tip, to: 1)
+    }
+
+    /// Copies a part's original text (what was read there, as its bubble shows), and says so
+    /// in the bubble for a moment.
+    func copy(_ spot: ImageTranslation.Spot) {
+        onCopyText(spot.original)
+        guard let tip else { return }
+        tip.model.copied = true
+        tipTimer?.invalidate()
+        tipTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { [weak tip] _ in
+            MainActor.assumeIsolated { tip?.model.copied = false }
+        }
+    }
+
+    private func fade(_ window: NSWindow, to alpha: CGFloat) {
+        guard window.alphaValue != alpha else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = alpha > 0 ? 0.14 : 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = alpha
+        }
     }
 
     // MARK: Locking
@@ -712,6 +813,7 @@ final class FloatingImageWindow {
         guard locked != state.locked else { return }
         state.locked = locked
         panel.ignoresMouseEvents = locked
+        content.refreshHover()
         if locked {
             flash("Locked · clicks pass through")
         } else {
@@ -744,7 +846,8 @@ final class FloatingImageWindow {
         if f == .command {
             switch chars {
             case "w": close()
-            case "c": onCopy(); flash("Copied")
+            case "c":
+                if content.copySelectedText() { flash("Copied text") } else { onCopy(); flash("Copied") }
             case "=", "+": setZoom(state.zoom * 1.25, animate: true)
             case "-": setZoom(state.zoom * 0.8, animate: true)
             case "0": setZoom(1, animate: true)
@@ -834,10 +937,26 @@ private final class MenuAction: NSObject {
 final class FloatingImageView: NSView {
     weak var window_: FloatingImageWindow?
     private let imageLayer = CALayer()
+    private let rim = RimLayer()
+    private let cornerRadius: CGFloat
     private let state: FloatingImageState
+    /// The size of the picture in pixels, which the parts of a translation are measured in.
+    private let pixels: CGSize
+    /// Rings the part of the translation under the pointer.
+    private let ring = CAShapeLayer()
+    private let ringGlow = CAShapeLayer()
+    private var hovered: Int?
+    /// Live Text over the original, as in Preview: its text can be selected and copied. Read on
+    /// this Mac when the image is floated; hidden while the translation shows, whose parts
+    /// copy their original instead.
+    private let liveText = ImageAnalysisOverlayView()
+    private static let analyzer = ImageAnalyzer()
+    private var analysing: Task<Void, Never>?
 
     init(image: CGImage, state: FloatingImageState, cornerRadius: CGFloat) {
+        pixels = CGSize(width: image.width, height: image.height)
         self.state = state
+        self.cornerRadius = cornerRadius
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
@@ -847,15 +966,74 @@ final class FloatingImageView: NSView {
         imageLayer.contentsGravity = .resize
         imageLayer.minificationFilter = .trilinear
         layer?.addSublayer(imageLayer)
-        // A hairline edge, so a white image still stands apart from a white window behind it.
-        let edge = CALayer()
-        edge.name = "edge"
-        edge.borderWidth = 0.5
-        edge.borderColor = NSColor.black.withAlphaComponent(0.18).cgColor
-        edge.cornerRadius = cornerRadius
-        edge.cornerCurve = .continuous
-        layer?.addSublayer(edge)
+        // Light along the top edge, as on the panels; the glow and shadow are outside (`GlowHalo`).
+        layer?.addSublayer(rim)
+        for shape in [ringGlow, ring] {
+            shape.opacity = 0
+            layer?.addSublayer(shape)
+        }
+        colourRing()
+        liveText.delegate = self
+        liveText.preferredInteractionTypes = .automaticTextOnly
+        liveText.isSupplementaryInterfaceHidden = true
+        liveText.isHidden = true
+        addSubview(liveText)
+        guard ImageAnalyzer.isSupported else { return }
+        analysing = Task { @MainActor [weak self] in
+            let analysis = try? await Self.analyzer.analyze(image, orientation: .up, configuration: .init(.text))
+            guard let self, let analysis else { return }
+            self.liveText.analysis = analysis
+            self.updateLiveText()
+        }
     }
+
+    /// Stops reading the image for Live Text, when it's closed before that's done.
+    func stopAnalysing() { analysing?.cancel() }
+
+    /// Live Text works on the original only, and not through a locked image.
+    private func updateLiveText() {
+        let off = state.showsTranslation || state.locked || liveText.analysis == nil
+        if off, liveText.hasActiveTextSelection { liveText.resetSelection() }
+        liveText.isHidden = off
+    }
+
+    /// Copies the text selected with Live Text, if any.
+    func copySelectedText() -> Bool {
+        guard !liveText.isHidden, liveText.hasActiveTextSelection, !liveText.selectedText.isEmpty else { return false }
+        window_?.onCopyText(liveText.selectedText)
+        return true
+    }
+
+    /// Live Text takes the pointer over its text (and while text is selected, so a click
+    /// elsewhere clears it); anywhere else the image moves, zooms and shows its menu as before.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard let hit, hit === liveText || hit.isDescendant(of: liveText) else { return hit }
+        // It takes points from the top left, though the view's origin is at the bottom left.
+        let inside = liveText.convert(point, from: superview)
+        let item = liveText.hasInteractiveItem(at: CGPoint(x: inside.x, y: liveText.bounds.height - inside.y))
+        return item || liveText.hasActiveTextSelection ? hit : self
+    }
+
+    private func colourRing() {
+        let accent = NSColor.controlAccentColor
+        ring.fillColor = accent.withAlphaComponent(0.1).cgColor
+        ring.strokeColor = accent.blended(withFraction: 0.3, of: .white)?.withAlphaComponent(0.9).cgColor
+        ring.lineWidth = 1.5
+        ringGlow.fillColor = nil
+        ringGlow.strokeColor = accent.withAlphaComponent(0.22).cgColor
+        ringGlow.lineWidth = 7
+    }
+
+    /// The system appearance is light; the rim follows it, as the glow around does.
+    private var isLight: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .darkAqua }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        rim.update(cornerRadius: cornerRadius, light: isLight)
+        colourRing()
+    }
+
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -883,7 +1061,17 @@ final class FloatingImageView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         imageLayer.frame = bounds
-        layer?.sublayers?.first { $0.name == "edge" }?.frame = bounds
+        rim.frame = bounds
+        rim.update(cornerRadius: cornerRadius, light: isLight)
+        ring.frame = bounds
+        ringGlow.frame = bounds
+        liveText.frame = bounds
+        if let hovered, let spot = window_?.spots[safe: hovered] {
+            ring.path = path(of: spot)
+            ringGlow.path = ring.path
+            // Zooming: the bubble goes along.
+            if let window { window_?.hover(spot, at: window.convertToScreen(convert(spot.bounds.applying(toView), to: nil))) }
+        }
         CATransaction.commit()
     }
 
@@ -892,17 +1080,82 @@ final class FloatingImageView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { state.hovering = true }
-    override func mouseExited(with event: NSEvent) { state.hovering = false }
+    override func mouseEntered(with event: NSEvent) { state.hovering = true; refreshHover() }
+    override func mouseExited(with event: NSEvent) { state.hovering = false; setHovered(nil) }
+    override func mouseMoved(with event: NSEvent) { setHovered(spot(at: convert(event.locationInWindow, from: nil))) }
 
+    /// A click on a part of the translation copies its original text; dragging from it moves the image, as
+    /// from anywhere else.
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         if event.clickCount == 2 { return window_?.toggleActualSize() ?? () }
-        window?.performDrag(with: event)
+        let start = event.locationInWindow
+        guard let i = spot(at: convert(start, from: nil)), let spot = window_?.spots[safe: i], let window else {
+            return window?.performDrag(with: event) ?? ()
+        }
+        while let next = window.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            if next.type == .leftMouseUp { return window_?.copy(spot) ?? () }
+            if hypot(next.locationInWindow.x - start.x, next.locationInWindow.y - start.y) > 3 {
+                setHovered(nil)
+                return window.performDrag(with: event)
+            }
+        }
+    }
+
+    // MARK: Parts of the translation
+
+    /// Checks the pointer again: after the translation is shown or hidden, or the image moves.
+    func refreshHover() {
+        updateLiveText()
+        guard let window, state.hovering else { return setHovered(nil) }
+        setHovered(spot(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)))
+    }
+
+    /// Which part of the translation showing is at `point`.
+    private func spot(at point: NSPoint) -> Int? {
+        guard state.showsTranslation, !state.locked, bounds.width > 0, bounds.height > 0, let spots = window_?.spots else { return nil }
+        let p = CGPoint(x: point.x * pixels.width / bounds.width, y: (bounds.height - point.y) * pixels.height / bounds.height)
+        // The smallest under the pointer, when parts overlap.
+        return spots.indices.filter { spots[$0].contains(p) }
+            .min { spots[$0].rect.width * spots[$0].rect.height < spots[$1].rect.width * spots[$1].rect.height }
+    }
+
+    /// From the picture's pixels (top left) to this view's points (bottom left).
+    private var toView: CGAffineTransform {
+        CGAffineTransform(a: bounds.width / pixels.width, b: 0, c: 0, d: -bounds.height / pixels.height, tx: 0, ty: bounds.height)
+    }
+
+    private func path(of spot: ImageTranslation.Spot) -> CGPath {
+        let scale = bounds.width / pixels.width
+        let corner = min(5 / max(scale, 0.01), spot.rect.height / 2, spot.rect.width / 2)
+        var transform = CGAffineTransform(translationX: spot.pivot.x, y: spot.pivot.y).rotated(by: spot.angle)
+            .translatedBy(x: -spot.pivot.x, y: -spot.pivot.y).concatenating(toView)
+        return CGPath(roundedRect: spot.rect, cornerWidth: corner, cornerHeight: corner, transform: &transform)
+    }
+
+    private func setHovered(_ index: Int?) {
+        guard index != hovered else { return }
+        hovered = index
+        let spot = index.flatMap { window_?.spots[safe: $0] }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.14)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        if let spot {
+            CATransaction.setDisableActions(ring.opacity == 0)      // A new ring appears in place, then fades in.
+            ring.path = path(of: spot)
+            ringGlow.path = ring.path
+            CATransaction.setDisableActions(false)
+        }
+        ring.opacity = spot == nil ? 0 : 1
+        ringGlow.opacity = ring.opacity
+        CATransaction.commit()
+        guard let spot, let window else { return window_?.hover(nil) ?? () }
+        let onScreen = window.convertToScreen(convert(spot.bounds.applying(toView), to: nil))
+        window_?.hover(spot, at: onScreen)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? { window_?.menu() }
@@ -924,6 +1177,75 @@ final class FloatingImageView: NSView {
     override func magnify(with event: NSEvent) {
         guard let owner = window_ else { return }
         owner.setZoom(owner.state.zoom * (1 + event.magnification), around: NSEvent.mouseLocation)
+    }
+}
+
+// MARK: - Original of a part
+
+final class FloatTipModel: ObservableObject {
+    @Published var original = "" { didSet { width = Self.width(of: original) } }
+    @Published var copied = false
+    /// As wide as the text, up to 300 pt, where a longer one wraps.
+    @Published private(set) var width: CGFloat = 200
+
+    static let font = NSFont.systemFont(ofSize: 12.5, weight: .medium)
+    static let hint = "Click to copy this text"
+
+    private static func width(of text: String) -> CGFloat {
+        let natural = (text as NSString).size(withAttributes: [.font: font]).width
+        let hint = (Self.hint as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium)]).width + 20
+        return min(max(natural, hint) + 2, 278).rounded(.up)
+    }
+}
+
+/// The bubble with the original of the part of a translated image under the pointer. It never
+/// takes the mouse, so it can't come between the pointer and the image.
+final class FloatTipPanel: NSPanel {
+    let model = FloatTipModel()
+    let hosting: NSHostingView<FloatTip>
+
+    init() {
+        hosting = NSHostingView(rootView: FloatTip(model: model))
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isFloatingPanel = true
+        level = .floating
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        alphaValue = 0
+        ignoresMouseEvents = true
+        contentView = hosting
+    }
+
+    override var canBecomeKey: Bool { false }
+}
+
+struct FloatTip: View {
+    @ObservedObject var model: FloatTipModel
+    var tone = GlowTone()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(model.original)
+                .font(Font(FloatTipModel.font))
+                .lineLimit(8)
+                .fixedSize(horizontal: false, vertical: true)
+            Label(model.copied ? "Copied" : FloatTipModel.hint,
+                  systemImage: model.copied ? "checkmark" : "cursorarrow.click")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(model.copied ? AnyShapeStyle(Color.green) : AnyShapeStyle(.secondary))
+                .animation(.easeOut(duration: 0.12), value: model.copied)
+        }
+        .frame(width: model.width, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .lightRim(cornerRadius: 12, tone: tone)
+        .background(GlassBackground(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -976,6 +1298,8 @@ final class StripHostingView: NSHostingView<FloatStrip> {
 /// Copy · Lock. Buttons show their keys.
 struct FloatStrip: View {
     static let infoWidth: CGFloat = 196
+    /// For a narrow image: the zoom alone (opacity shows while it changes, in the same room).
+    static let compactInfoWidth: CGFloat = 76
     @ObservedObject var state: FloatingImageState
     var close: () -> Void = {}
     var zoom: (CGFloat) -> Void = { _ in }
@@ -984,6 +1308,7 @@ struct FloatStrip: View {
     var edit: () -> Void = {}
     var copy: () -> Void = {}
     var lock: () -> Void = {}
+    var tone = GlowTone()
 
     var body: some View {
         HStack(spacing: 2) {
@@ -1003,6 +1328,7 @@ struct FloatStrip: View {
         }
         .padding(.horizontal, 4)
         .frame(height: 30)
+        .lightRim(cornerRadius: 15, tone: tone)
         .background(GlassBackground(cornerRadius: 15))
         .clipShape(Capsule())
         .foregroundStyle(.primary)
@@ -1013,9 +1339,17 @@ struct FloatStrip: View {
     private var info: some View {
         Group {
             if let status = state.status {
-                Label(status, systemImage: "character.bubble")
+                Label(status, systemImage: "character.bubble").help(status)
             } else if let message = state.message {
                 Text(message).help(message)
+            } else if state.compactStrip {
+                // Opacity while it's being changed, otherwise the zoom; ⌘ scroll or pinch zooms.
+                if state.flashing, state.opacity < 1 {
+                    Label("\(Int((state.opacity * 100).rounded()))%", systemImage: "circle.lefthalf.filled")
+                } else {
+                    Label("\(Int((state.zoom * 100).rounded()))%", systemImage: "magnifyingglass")
+                        .help("Zoom: pinch, ⌘ scroll or ⌘+ ⌘−. Scroll for clearer or fainter (↑ ↓)")
+                }
             } else {
                 HStack(spacing: 8) {
                     if state.showsTranslation, let language = state.language {
@@ -1035,7 +1369,7 @@ struct FloatStrip: View {
         .labelStyle(ReadoutLabelStyle())
         .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
         // Always this wide, whatever it says, so the buttons never move under the pointer.
-        .frame(width: Self.infoWidth)
+        .frame(width: state.compactStrip ? Self.compactInfoWidth : Self.infoWidth)
         .lineLimit(1)
         .truncationMode(.tail)
     }
@@ -1078,7 +1412,8 @@ private struct StripButton: View {
             .padding(.horizontal, keys == nil ? 0 : 7)
             .frame(minWidth: 24, minHeight: 24)
             .foregroundStyle(selected ? Color.white : Color.primary)
-            .background(Capsule().fill(selected ? Color.accentColor : Color.clear))
+            .background(Capsule().fill(selected ? Color.accentColor : Color.clear)
+                .shadow(color: Color.accentColor.opacity(selected ? 0.35 : 0), radius: 5, y: 1))
             .contentShape(Capsule())
         }
         .buttonStyle(StripButtonStyle())
@@ -1101,4 +1436,9 @@ private struct ReadoutLabelStyle: LabelStyle {
             configuration.title.lineLimit(1)
         }
     }
+}
+
+extension FloatingImageView: ImageAnalysisOverlayViewDelegate {
+    /// The picture fills the view.
+    func contentsRect(for overlayView: ImageAnalysisOverlayView) -> CGRect { CGRect(x: 0, y: 0, width: 1, height: 1) }
 }

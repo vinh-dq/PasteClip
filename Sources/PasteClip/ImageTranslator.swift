@@ -26,14 +26,17 @@ final class ImageTranslator {
     }
 
     /// Finds the text in an image. A small image is read at twice its size, which Vision reads
-    /// small letters much better at.
+    /// small letters much better at. Its layout (paragraphs, list items, table cells) is read at
+    /// the same time, on macOS 26, to tell which lines make up a paragraph.
     @MainActor
     func read(_ image: CGImage) async throws -> Reading {
         let languages = settings.textLanguages
         let reading = await Task.detached(priority: .userInitiated) { () -> Reading in
             let small = max(image.width, image.height) < 1200
+            async let regions = TextRecognizer.layout(in: image)
             let lines = TextRecognizer.lines(in: small ? TextRecognizer.upscaled(image, by: 2) : image, languages: languages)
-            let blocks = ImageTranslation.blocks(from: lines, size: CGSize(width: image.width, height: image.height))
+            let blocks = await ImageTranslation.blocks(from: lines, size: CGSize(width: image.width, height: image.height),
+                                                       regions: regions)
             return Reading(blocks: blocks, languages: blocks.map { ImageTranslation.language(of: $0.text, allowed: languages) })
         }.value
         guard !reading.blocks.isEmpty else { throw Failure(message: TextRecognizer.nothingFoundMessage) }
@@ -45,20 +48,22 @@ final class ImageTranslator {
         ImageTranslation.target(for: reading.languages, priority: settings.translationTargets)
     }
 
-    /// `image` with its text in `target`, and what went wrong with any language that couldn't
-    /// be translated (the rest still is). Text already in that language is left as it is.
+    /// `image` with its text in `target`, where each translation went, and what went wrong with
+    /// any language that couldn't be translated (the rest still is). Text already in that
+    /// language is left as it is.
     @MainActor
-    func translate(_ image: CGImage, reading: Reading, to target: String) async throws -> (image: CGImage, problem: String?) {
+    func translate(_ image: CGImage, reading: Reading, to target: String) async throws
+        -> (image: CGImage, spots: [ImageTranslation.Spot], problem: String?) {
         let (translations, problem) = try await translate(reading, to: target)
         guard translations.contains(where: { !$0.isEmpty }) else {
             throw Failure(message: problem ?? "The text is already in \(Translator.name(of: target))")
         }
         let blocks = reading.blocks
         let rendered = await Task.detached(priority: .userInitiated) {
-            ImageTranslation.render(image, blocks: blocks, translations: translations)
+            ImageTranslation.rendered(image, blocks: blocks, translations: translations)
         }.value
         guard let rendered else { throw Failure(message: "Couldn't draw the translation") }
-        return (rendered, problem)
+        return (rendered.image, rendered.spots, problem)
     }
 
     /// One translation per block, empty for those already in `target`. Blocks go in one request

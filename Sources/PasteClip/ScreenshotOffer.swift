@@ -1,16 +1,18 @@
 import AppKit
+import PasteClipSystem
 import PasteClipCore
 import SwiftUI
 
 /// After a screenshot: a small card in the bottom corner of the screen with the picture and what
 /// can be done with it next, Edit E, Float P and Translate T, so there's no setting to change
-/// first. The app in front keeps the keyboard, so typing carries on; with the pointer over the
-/// card it takes those keys (Esc or any other key closes it). It goes on its own after a few
-/// seconds unless the pointer is over it.
+/// first. It takes those keys at once, wherever the pointer is. Any other key closes it and goes
+/// on to the app in front, so typing there carries on without losing a letter; Esc just closes it.
+/// It goes on its own after a few seconds unless the pointer is over it.
 final class ScreenshotOffer {
     enum Choice { case edit, float, translate }
 
     private var panel: OfferPanel?
+    private var halo: GlowHalo?
     private var closeWork: DispatchWorkItem?
     var sharingType = NSWindow.SharingType.readOnly
 
@@ -24,8 +26,9 @@ final class ScreenshotOffer {
             self?.close()
             onChoose(choice)
         }
+        let tone = GlowTone()
         let hosting = NSHostingView(rootView: OfferView(
-            image: image, choose: pick,
+            image: image, tone: tone, choose: pick,
             close: { [weak self] in self?.close() },
             hover: { [weak self] inside in self?.hover(inside) }))
         // Rounded as its glass, so the window's shadow is too.
@@ -35,11 +38,16 @@ final class ScreenshotOffer {
         hosting.layer?.masksToBounds = true
         panel.contentView = hosting
         panel.onKey = { [weak self] event in
-            switch event.charactersIgnoringModifiers?.lowercased() {
+            let plain = event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            switch plain ? event.charactersIgnoringModifiers?.lowercased() : nil {
             case "e": pick(.edit)
             case "p": pick(.float)
             case "t": pick(.translate)
-            default: self?.close()
+            case _ where event.keyCode == 53: self?.close()              // Esc only closes.
+            default:
+                // At once, so the keyboard is back with the app in front for the key.
+                self?.close(animated: false)
+                Self.passOn(event)
             }
         }
         // In the corner of the screen itself: the Dock sits in the middle of the bottom edge.
@@ -51,6 +59,10 @@ final class ScreenshotOffer {
         panel.sharingType = sharingType
         panel.alphaValue = 0
         panel.orderFrontRegardless()
+        // It takes the keyboard only when other keys can be sent on to the app in front
+        // (Accessibility); without that, typing would lose its first key here. Clicks still work.
+        if Paster.isTrusted { panel.makeKey() }
+        halo = GlowHalo(around: panel, kind: .panel, cornerRadius: 16, tone: tone)
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -75,16 +87,16 @@ final class ScreenshotOffer {
         }, completionHandler: { panel.orderOut(nil) })
     }
 
-    /// Takes the keys while the pointer is over the card, and gives them back when it leaves.
+    /// Stays while the pointer is over it.
     private func hover(_ inside: Bool) {
-        guard let panel else { return }
-        if inside {
-            closeWork?.cancel()
-            panel.makeKey()
-        } else {
-            closeLater()
-            if panel.isKeyWindow { NSWorkspace.shared.frontmostApplication?.activate() }
-        }
+        if inside { closeWork?.cancel() } else { closeLater() }
+    }
+
+    /// Sends a key the card didn't want on to the app in front, once the card has let the
+    /// keyboard go back to it. Needs the Accessibility permission that pasting uses.
+    private static func passOn(_ event: NSEvent) {
+        guard let key = event.cgEvent?.copy() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { key.post(tap: .cghidEventTap) }
     }
 
     private func closeLater() {
@@ -122,6 +134,7 @@ private final class OfferPanel: NSPanel {
 /// The picture on top, with a close button on hover, and the three choices under it.
 private struct OfferView: View {
     let image: NSImage
+    let tone: GlowTone
     let choose: (ScreenshotOffer.Choice) -> Void
     let close: () -> Void
     let hover: (Bool) -> Void
@@ -133,17 +146,17 @@ private struct OfferView: View {
         VStack(spacing: 6) {
             thumbnail
             HStack(spacing: 4) {
-                // The keys work while the pointer is over the card, so that's when they show.
-                CapsuleButton(title: "Edit", symbol: "pencil.tip", key: hovering.value ? "E" : nil, expands: true,
+                CapsuleButton(title: "Edit", symbol: "pencil.tip", key: "E", expands: true,
                               help: "Edit (E)") { choose(.edit) }
-                CapsuleButton(title: "Float", symbol: "pip", key: hovering.value ? "P" : nil, expands: true,
+                CapsuleButton(title: "Float", symbol: "pip", key: "P", expands: true,
                               help: "Float (P)") { choose(.float) }
-                CapsuleButton(title: "Translate", symbol: "character.bubble", key: hovering.value ? "T" : nil, expands: true,
+                CapsuleButton(title: "Translate", symbol: "character.bubble", key: "T", expands: true,
                               help: "Translate (T)") { choose(.translate) }
             }
         }
         .padding(6)
         .frame(width: Self.width)
+        .lightRim(cornerRadius: 16, tone: tone)
         .background(GlassBackground(cornerRadius: 16))
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.15)) { hovering.value = inside }
@@ -177,5 +190,9 @@ private struct OfferView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+        // Double-clicking the picture floats it, as P does.
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { choose(.float) }
+        .help("Double-click to float (P)")
     }
 }
