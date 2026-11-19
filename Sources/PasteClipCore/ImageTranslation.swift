@@ -827,8 +827,9 @@ public enum ImageTranslation {
         if letters <= 1, t.unicodeScalars.allSatisfy(\.isASCII) { return true }
         // Mostly digits and symbols.
         if Double(letters) < Double(marks) * 0.3 { return true }
-        // One word with digits in it, as many digits and marks as letters.
-        guard !t.contains(where: \.isWhitespace), t.contains(where: \.isNumber) else { return false }
+        // One word with digits in it, as many digits and marks as letters. Chinese and Japanese
+        // have no spaces, so a whole sentence with a time in it ("毎日8:00～20:00営業") isn't one word.
+        guard !t.contains(where: \.isWhitespace), !isCloseSet(t), t.contains(where: \.isNumber) else { return false }
         return letters <= marks - letters
     }
 

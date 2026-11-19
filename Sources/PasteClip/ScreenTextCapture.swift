@@ -54,6 +54,12 @@ final class ScreenTextCapture {
         }
     }
 
+    /// Reads the text in an image file as if it were the area picked on screen (removing the file).
+    func read(_ file: URL) {
+        running = true
+        recognize(file)
+    }
+
     private func recognize(_ file: URL) {
         // No file means the selection was cancelled.
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),

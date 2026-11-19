@@ -302,7 +302,7 @@ private func line(_ text: String, _ rect: CGRect, size: CGFloat = 1000) -> TextR
     for code in ["SKU-48213", "v2.4.1", "#3A7BD5", "12kg", "x", "→ 3", "2024/11/19"] {
         #expect(ImageTranslation.language(of: code, allowed: ["en", "vi"]) == nil, "\(code)")
     }
-    for words in ["Open", "iPhone15 Pro", "COVID-19 vaccine", "日"] {
+    for words in ["Open", "iPhone15 Pro", "COVID-19 vaccine", "日", "毎日8:00～20:00営業しています"] {
         #expect(ImageTranslation.language(of: words, allowed: ["en", "vi", "ja"]) != nil, "\(words)")
     }
     var unsure = line("lIlI", CGRect(x: 40, y: 100, width: 100, height: 24))

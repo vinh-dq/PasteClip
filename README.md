@@ -7,6 +7,60 @@ A free, open-source clipboard manager for macOS, written in Swift (AppKit + Swif
 PasteClip keeps everything you copy (text, links, images, files, colours) and brings it back with
 one shortcut: press **⇧⌘V**, pick a card, and it is pasted into the app you were using.
 
+## Highlights
+
+### Your clipboard history, one shortcut away
+Press **⇧⌘V**: every recent clip slides in as a card, from text and links to images and colours.
+Arrow through them, Space for a large preview, Tab through your pinboards, type to search,
+Return to paste.
+
+<img src="docs/media/shelf.gif" width="760" alt="The shelf: browsing clips, previewing an image, switching pinboards and searching">
+
+### Translate what you select
+Select text in any app and press **⌃Space**: the translation appears by the pointer. Number keys
+switch the language, Return copies it, ⌘Return pastes it in place of the selection. Google and
+Bing work without a key, Apple's translation runs on your Mac, and DeepL, Microsoft and AI models
+(OpenAI, Claude, Gemini, DeepSeek, Grok) work with your own API key.
+
+<img src="docs/media/translate-text.jpg" width="620" alt="A Japanese message selected in a text editor, translated into English in PasteClip's panel">
+
+### Translate the text in an image, in place
+Like a camera translator for your screen: the translation is drawn where the text was, over the
+same background. Point at any line to see the original; click it to copy. T switches between the
+translation and the original.
+
+<img src="docs/media/translate-image.gif" width="510" alt="A Japanese café menu translated into English in place; hovering shows the original, a click copies it">
+
+### Capture, mark up, float
+**⇧⌘1** captures an area of the screen; a card in the corner offers Edit, Float and Translate.
+The editor has arrows, boxes, text, highlighter, numbered steps, pixelate and crop, each on one key.
+
+<table>
+<tr>
+<td width="36%"><img src="docs/media/screenshot-card.png" alt="The card shown after a screenshot, with Edit, Float and Translate"></td>
+<td><img src="docs/media/editor.jpg" alt="The image editor with a box and an arrow drawn on a poster"></td>
+</tr>
+</table>
+
+### Keep an image in view, and copy its text
+**⌃F** floats an image above every window: for a reference, a spec or a colour palette while you
+work. Zoom, fade it, or let clicks pass through. Its text can be selected and copied with Live Text.
+
+<img src="docs/media/float-live-text.jpg" width="600" alt="A poster floating on screen with a line of its text selected">
+
+### Copy text from the screen, paste several things in order
+**⌥⇧⌘2** copies the text in any area of the screen, read on your Mac. The paste stack collects
+what you copy and pastes it back one by one, in the same order.
+
+<table>
+<tr>
+<td><img src="docs/media/screen-text.png" alt="Copied 5 lines of text, with the first lines shown"></td>
+<td><img src="docs/media/paste-stack.png" alt="The paste stack listing three clips to paste in order"></td>
+</tr>
+</table>
+
+All demos use sample content; nothing in them comes from a real clipboard.
+
 ## Install
 
 1. Download **`PasteClip-<version>.dmg`** from the [latest release](https://github.com/vinh-dq/PasteClip/releases/latest).
@@ -38,21 +92,32 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Uninstall:** quit PasteClip, move it to the Trash, and delete
   `~/Library/Application Support/PasteClip` to remove your history.
 
-## Features
+## All features
+
+### Clipboard history
 
 - **History** of text, formatted text (RTF/HTML), links, colours, images and files, with the app each clip came from
 - **Shelf**: ⇧⌘V slides in a panel of cards from the bottom (or top) of the screen
 - **Search** across text, titles, file paths, source apps and text found in images (Vision), plus filters by type, app and date
 - **Pinboards**: named, coloured collections for clips you want to keep
 - **Paste stack**: copy several things, then paste them one by one in the same order
-- **Copy text from the screen**: ⌥⇧⌘2, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
-- **Translate**: ⌃Space translates the selected text (or the clipboard) in a small panel by the pointer. It picks the language for you: Vietnamese text into English, anything else into Vietnamese; 1–4 switch between Vietnamese, English, Japanese and Chinese. Click the text (or press E) to edit it in place: the translation follows as you type. R translates the translation back. Return copies, ⌘Return pastes the translation back into the app. With the shelf open, ⌃Space translates the selected clips instead. Uses Google Translate or Bing Translator (free, no key) or Apple's on-device translation; Google Cloud, DeepL and Microsoft, and the AI models of OpenAI, Claude, Gemini, DeepSeek and Grok, work with your own API key (the model can be chosen)
 - **Preview and edit**: Space for a large preview (Quick Look for images and files) with copy, translate and edit at hand, give clips a title, edit text clips. Esc saves an edit everywhere, ⌥Esc discards it
-- **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
-- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T); any other key closes it and goes on to the app you're typing in
-- **Translate images**: the translation drawn where the text is, like a camera translator: the original letters are taken out while the photo or gradient behind them stays, turned text stays turned, vertical Chinese and Japanese are read and written in columns, and codes, IDs and logos are left alone. On macOS 26 Vision's layout keeps columns and table cells apart. Point at any text on the translated image to see what was read there, translated or not; click it to copy that text. ⇧⌘2 does it for an area of the screen, in place; ⌃⌥Space for images in the shelf; T on a floating image. The translated image is saved as a clip (can be turned off in Settings → Translation)
-- **Float images**: ⌃F keeps an image above every window. Its text can be selected and copied (⌘C) with Live Text, as in Preview. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
 - **Direct paste** into the current app, or paste as plain text (needs Accessibility permission)
+
+### Translation
+
+- **Translate**: ⌃Space translates the selected text (or the clipboard) in a small panel by the pointer. It picks the language for you: Vietnamese text into English, anything else into Vietnamese; 1–4 switch between Vietnamese, English, Japanese and Chinese. Click the text (or press E) to edit it in place: the translation follows as you type. R translates the translation back. Return copies, ⌘Return pastes the translation back into the app. With the shelf open, ⌃Space translates the selected clips instead. Uses Google Translate or Bing Translator (free, no key) or Apple's on-device translation; Google Cloud, DeepL and Microsoft, and the AI models of OpenAI, Claude, Gemini, DeepSeek and Grok, work with your own API key (the model can be chosen)
+- **Translate images**: the translation drawn where the text is, like a camera translator: the original letters are taken out while the photo or gradient behind them stays, turned text stays turned, vertical Chinese and Japanese are read and written in columns, and codes, IDs and logos are left alone. On macOS 26 Vision's layout keeps columns and table cells apart. Point at any text on the translated image to see what was read there, translated or not; click it to copy that text. ⇧⌘2 does it for an area of the screen, in place; ⌃⌥Space for images in the shelf; T on a floating image. The translated image is saved as a clip (can be turned off in Settings → Translation)
+
+### Images and the screen
+
+- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T); any other key closes it and goes on to the app you're typing in
+- **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
+- **Float images**: ⌃F keeps an image above every window. Its text can be selected and copied (⌘C) with Live Text, as in Preview. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
+- **Copy text from the screen**: ⌥⇧⌘2, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
+
+### Privacy and settings
+
 - **Privacy**: skips clips that password managers mark as private, and anything copied in apps you exclude
 - **Light or dark**: the sun / moon button at the top right of the shelf switches PasteClip between light and dark; Settings → General → Appearance goes back to following the system
 - **Settings**: paste into the front app or only copy, always plain text, history retention, translation (languages and their order, service, API keys), privacy options (screen sharing, link previews, passwords, temporary clips, ignored apps), shortcuts, sounds, launch at login

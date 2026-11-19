@@ -4,7 +4,11 @@ import PasteClipCore
 import PasteClipSystem
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let settings = AppSettings()
+    /// `--settings <name>` keeps settings in a domain of their own, starting from the defaults (as
+    /// for recording demos), without touching your own.
+    private let settings = AppSettings(defaults: CommandLine.arguments.firstIndex(of: "--settings")
+        .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? UserDefaults(suiteName: CommandLine.arguments[$0 + 1]) : nil }
+        ?? .standard)
     /// `--store <folder>` keeps history somewhere else, for trying things out without touching your own.
     private let store = ClipStore(directory: CommandLine.arguments.firstIndex(of: "--store")
         .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) : nil })
@@ -47,16 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.play("Tink")
             switch self.settings.screenshotAction {
             case .offer:
-                guard let image = self.store.image(for: item) else { return }
-                self.screenshotOffer.sharingType = self.settings.hideDuringScreenSharing ? .none : .readOnly
-                self.screenshotOffer.show(item, image: image) { [weak self] choice in
-                    guard let self, let current = self.store.item(withID: item.id) else { return }
-                    switch choice {
-                    case .edit: self.imageEditors.edit(current)
-                    case .float: self.floatingImages.show(current)
-                    case .translate: self.floatingImages.show(current, translate: true)
-                    }
-                }
+                self.offer(item)
             case .copy: break
             case .edit: self.imageEditors.edit(item)
             case .float: self.floatingImages.show(item)
@@ -73,11 +68,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Lets you jump straight to a screen while working on the UI:
     /// `PasteClip --open shelf|preview|editor|float|general|text|translation|privacy|shortcuts`, `--translate "some text"`,
-    /// or `--translate-image path/to/image.png` (floated, translated where its text is).
+    /// `--translate-image path/to/image.png` (floated, translated where its text is), `--read-text-from
+    /// path/to/image.png` (as if that area of the screen were picked for its text), or `--open offer|stack`
+    /// (the card after a screenshot for the latest image; the paste stack with the three latest texts).
     private func openFromArguments() {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--translate"), args.indices.contains(i + 1) {
             translation.show(args[i + 1])
+            return
+        }
+        if let i = args.firstIndex(of: "--read-text-from"), args.indices.contains(i + 1) {
+            // Reading removes the file it reads, as it does a screenshot's: a copy goes.
+            let copy = FileManager.default.temporaryDirectory.appendingPathComponent("PasteClip-\(UUID().uuidString).png")
+            try? FileManager.default.copyItem(at: URL(fileURLWithPath: args[i + 1]), to: copy)
+            screenText.read(copy)
             return
         }
         if let i = args.firstIndex(of: "--translate-image"), args.indices.contains(i + 1),
@@ -87,7 +91,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         guard let i = args.firstIndex(of: "--open"), args.indices.contains(i + 1) else { return }
-        if args[i + 1] == "shelf" {
+        if args[i + 1] == "offer", let image = store.items.first(where: \.isImage) {
+            offer(image)
+        } else if args[i + 1] == "stack" {
+            store.stackMode = true
+            for item in store.items.filter { $0.kind == .text }.prefix(3).reversed() { store.addToStack(item) }
+        } else if args[i + 1] == "shelf" {
             shelf.show()
         } else if args[i + 1] == "preview" {
             shelf.show()
@@ -96,6 +105,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             args[i + 1] == "editor" ? imageEditors.edit(image) : floatingImages.show(image)
         } else if let page = SettingsPage(rawValue: args[i + 1]) {
             settingsWindow.show(page)
+        }
+    }
+
+    /// The card offering Edit, Float and Translate for a screenshot just taken.
+    private func offer(_ item: ClipItem) {
+        guard let image = store.image(for: item) else { return }
+        screenshotOffer.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
+        screenshotOffer.show(item, image: image) { [weak self] choice in
+            guard let self, let current = self.store.item(withID: item.id) else { return }
+            switch choice {
+            case .edit: self.imageEditors.edit(current)
+            case .float: self.floatingImages.show(current)
+            case .translate: self.floatingImages.show(current, translate: true)
+            }
         }
     }
 
