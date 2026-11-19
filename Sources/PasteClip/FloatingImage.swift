@@ -987,7 +987,7 @@ struct FloatStrip: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            StripButton(symbol: "xmark", help: "Close (Esc)", action: close)
+            StripButton(symbol: "xmark", keys: "esc", help: "Close (Esc)", action: close)
             separator
             info.padding(.horizontal, 6)
             separator
@@ -998,16 +998,14 @@ struct FloatStrip: View {
             StripButton(symbol: "pencil", keys: "E", help: "Edit (E)", action: edit)
             StripButton(symbol: "doc.on.doc", keys: "⌘C", help: "Copy (⌘C)", action: copy)
             separator
-            StripButton(symbol: state.locked ? "lock.fill" : "lock.open", selected: state.locked,
+            StripButton(symbol: state.locked ? "lock.fill" : "lock.open", keys: "L", selected: state.locked,
                         help: state.locked ? "Unlock (L)" : "Lock: clicks pass through to the windows behind (L)", action: lock)
         }
         .padding(.horizontal, 4)
         .frame(height: 30)
-        .background(Capsule().fill(Color.black.opacity(0.16)))
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5))
-        .foregroundStyle(.white)
-        .environment(\.colorScheme, .dark)
+        .background(GlassBackground(cornerRadius: 15))
+        .clipShape(Capsule())
+        .foregroundStyle(.primary)
         .fixedSize()
     }
 
@@ -1043,7 +1041,7 @@ struct FloatStrip: View {
     }
 
     private var separator: some View {
-        Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 15).padding(.horizontal, 2)
+        Rectangle().fill(Color.primary.opacity(0.14)).frame(width: 1, height: 15).padding(.horizontal, 2)
     }
 
     private func zoomButton(_ symbol: String, factor: CGFloat, help: String) -> some View {
@@ -1051,7 +1049,7 @@ struct FloatStrip: View {
             Image(systemName: symbol)
                 .font(.system(size: 8, weight: .bold))
                 .frame(width: 16, height: 16)
-                .background(Circle().fill(Color.white.opacity(0.14)))
+                .background(Circle().fill(Color.primary.opacity(0.08)))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1074,12 +1072,13 @@ private struct StripButton: View {
                 if let keys {
                     Text(keys)
                         .font(.system(size: 8.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(selected ? 0.9 : 0.6))
+                        .foregroundStyle(selected ? Color.white.opacity(0.85) : Color.secondary)
                 }
             }
             .padding(.horizontal, keys == nil ? 0 : 7)
             .frame(minWidth: 24, minHeight: 24)
-            .background(Capsule().fill(selected ? Color.accentColor.opacity(0.85) : Color.clear))
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(Capsule().fill(selected ? Color.accentColor : Color.clear))
             .contentShape(Capsule())
         }
         .buttonStyle(StripButtonStyle())
@@ -1091,14 +1090,14 @@ private struct StripButton: View {
 private struct StripButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .background(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.18 : 0)))
+            .background(Capsule().fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0)))
     }
 }
 
 private struct ReadoutLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 3) {
-            configuration.icon.font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+            configuration.icon.font(.system(size: 9.5, weight: .bold)).foregroundStyle(.secondary)
             configuration.title.lineLimit(1)
         }
     }

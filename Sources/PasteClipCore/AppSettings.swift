@@ -153,7 +153,6 @@ public final class AppSettings: ObservableObject {
     @Published public var excludedBundleIDs: [String] { didSet { defaults.set(excludedBundleIDs, forKey: "excludedBundleIDs") } }
     @Published public var playSounds: Bool { didSet { defaults.set(playSounds, forKey: "playSounds") } }
     @Published public var shelfEdge: ShelfEdge { didSet { defaults.set(shelfEdge.rawValue, forKey: "shelfEdge") } }
-    @Published public var iCloudSync: Bool { didSet { defaults.set(iCloudSync, forKey: "iCloudSync") } }
     @Published public var shelfHotKey: KeyCombo? { didSet { store(shelfHotKey, "shelfHotKey") } }
     @Published public var stackHotKey: KeyCombo? { didSet { store(stackHotKey, "stackHotKey") } }
     @Published public var pasteNextHotKey: KeyCombo? { didSet { store(pasteNextHotKey, "pasteNextHotKey") } }
@@ -236,7 +235,6 @@ public final class AppSettings: ObservableObject {
         excludedBundleIDs = defaults.stringArray(forKey: "excludedBundleIDs") ?? Self.defaultExcluded
         playSounds = defaults.object(forKey: "playSounds") as? Bool ?? false
         shelfEdge = ShelfEdge(rawValue: defaults.string(forKey: "shelfEdge") ?? "") ?? .bottom
-        iCloudSync = defaults.bool(forKey: "iCloudSync")
         shelfHotKey = Self.load(defaults, "shelfHotKey", default: .openShelf)
         stackHotKey = Self.load(defaults, "stackHotKey", default: .toggleStack)
         pasteNextHotKey = Self.load(defaults, "pasteNextHotKey", default: .pasteNext)

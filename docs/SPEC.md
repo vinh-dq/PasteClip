@@ -47,7 +47,7 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | 4.2 | A clip belongs to at most one pinboard. Add or remove it from the card's right-click menu | ✅ |
 | 4.3 | Shelf tabs: History, then each pinboard. Tab / ⇧Tab move between them | ✅ |
 | 4.4 | Deleting a pinboard keeps its clips in history | ✅ |
-| 4.5 | Reorder pinboards by dragging a tab onto another tab; new pinboards go at the end. Arrange clips within a pinboard by dragging a card onto another (a bar shows where it lands); a clip added to a pinboard goes to the front. History stays newest first. Both orders are saved and synced | ✅ |
+| 4.5 | Reorder pinboards by dragging a tab onto another tab; new pinboards go at the end. Arrange clips within a pinboard by dragging a card onto another (a bar shows where it lands); a clip added to a pinboard goes to the front. History stays newest first. Both orders are saved | ✅ |
 
 ## 5. Paste stack
 
@@ -57,7 +57,7 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | 5.2 | While on, every new copy joins the end of the stack. Cards can also be added from their right-click menu | ✅ |
 | 5.3 | ⌃⌘V (configurable) pastes the next clip in the stack into the front app and removes it from the stack. Beeps when the stack is empty | ✅ |
 | 5.4 | A small floating list in the top-right corner shows the stack, highlights what comes next, lets you remove items, and has Done | ✅ |
-| 5.5 | Turning stack mode off empties the stack. The stack is never synced | ✅ |
+| 5.5 | Turning stack mode off empties the stack | ✅ |
 
 ## 6. Shelf (floating panel)
 
@@ -75,7 +75,7 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | 6.7 | Keyboard: ←/→ select, ⌘→/⌘← next/previous pinboard, Return paste, ⇧Return paste as plain text, ⌘1–⌘9 quick paste, ⌘N new text item, Space or ⌘Y preview, ⌘E edit, ⌘P pin, ⌘C copy only, the translate shortcut (⌃Space) translates the selected clips, ⌘⌫ delete, Tab next tab, ⌘F search, ⌘, settings | ✅ |
 | 6.7c | Several cards: ⇧←/⇧→ and ⇧-click select a range from the last card picked, ⌘-click adds or removes one, ⌘A selects every card (empty search). The selected card rises a little with a thin accent ring and glow; with several, each has the ring and a tick in its corner, and a bar under the row says how many and what keys do. Return (or Paste N Clips in the right-click menu) pastes them together in the row's order: text as one text a line apart (without formatting), files together, a mix with images one pasteboard item per clip; plain text turns images into their text and files into paths. ⌘C copies them the same way, ⌘⌫ or Delete N Clips deletes them all, Add to Paste Stack adds them all. Esc clears the selection; a new search, filter or tab does too | ✅ |
 | 6.7a | Mouse: a click selects the card immediately; a double-click pastes it into the front app (holding the plain-text modifier, ⇧ by default, pastes plain text). Clicks never scroll the row; keyboard moves do. Dragging a card onto a pinboard tab files it there, onto History takes it off its pinboard, and into another app drops its content | ✅ |
-| 6.7b | ⌘R, or double-clicking a card's label, names the clip in place: Return or clicking elsewhere saves, Esc cancels, an empty name takes it off. Double-clicking the rest of the card pastes. Also in the right-click menu as Rename… | ✅ |
+| 6.7b | ⌘R, or double-clicking a card's label, names the clip in place: Return, Esc or clicking elsewhere saves, ⌥Esc cancels, an empty name takes it off. Double-clicking the rest of the card pastes. Also in the right-click menu as Rename… | ✅ |
 | 6.8 | Right-click menu: Paste, Paste as Plain Text, Copy, Preview, Edit…, Rename…, Translate ▸ (automatic or into each target language), Pin, Pinboard ▸, Add to / Remove from Paste Stack, Delete | ✅ |
 
 ## 7. Preview and editing
@@ -83,10 +83,10 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | # | Requirement | Status |
 |---|---|---|
 | 7.1 | Space (or ⌘Y) opens a popup above the selected card, with an arrow pointing at it; it opens below the card when there's no room above. ←/→ move to the next clip and the popup follows. Space or Esc closes it | ✅ |
-| 7.2 | Look: glass like the shelf, rounded 22 pt, the arrow glass too. Header: a label like the card's (app icon, the clip's name or "Name this clip", how long ago) and actions as glass capsules with their keys — Copy ⌘C, Open (links), Finder (files), Float (images), Edit ⌘E (text, links, colours, images), Paste ↩ filled with the accent — and a close button; while editing, Cancel esc and Save ⌘S | ✅ |
+| 7.2 | Look: glass like the shelf, rounded 22 pt, the arrow glass too. Header: a label like the card's (app icon, the clip's name or "Name this clip", how long ago) and actions as capsules with their keys (the app's one button style) — Copy ⌘C, Translate (the translate shortcut; text and images), Pin ⌘P, Open (links), Finder (files), Float (images, the float shortcut) as symbol and key, Edit ⌘E (text, links, colours, images), Paste ↩ filled with the accent — and a close button; while editing, Discard ⌥esc and Save esc | ✅ |
 | 7.3 | Body, on a rounded sheet like the card, a little see-through so it isn't stark white (ringed with the accent while editing): formatted text with its formatting, minus backgrounds and black, white or grey text colours, which come from dark apps and don't read on the sheet; plain text selectable; images over a blurred copy of themselves; files through Quick Look (`QLPreviewView`); links with page title and image; colours filling the sheet with their code | ✅ |
-| 7.4 | Footer: characters · words · lines (text), pixel size (images), path or file count (files); source app and date; Copy Text in Image when Vision found text | ✅ |
-| 7.5 | Edit text, link and colour clips in place (Edit or ⌘E, ⌘S to save, Esc to cancel). The popup takes keyboard focus while editing. Saving drops the formatting and re-detects the kind | ✅ |
+| 7.4 | Footer, shown while the pointer is over the popup (and while editing): characters · words · lines (text), pixel size (images), path or file count (files); source app; Copy Text in Image when Vision found text | ✅ |
+| 7.5 | Edit text, link and colour clips in place (Edit or ⌘E; Esc, ⌘S or a click outside saves, ⌥Esc or Discard discards). The popup takes keyboard focus while editing. Saving drops the formatting and re-detects the kind | ✅ |
 | 7.6 | Clicking the name lets you name the clip (it becomes a field only then, so the popup doesn't take the shelf's keys); Return or leaving the field saves it | ✅ |
 
 ## 8. Paste
@@ -103,7 +103,7 @@ Sidebar on the left (General, Text Recognition, Translation, Privacy, Shortcuts,
 
 | # | Requirement | Status |
 |---|---|---|
-| 9.1 | General: open at login (`SMAppService`), iCloud sync with status, sound effects | ✅ |
+| 9.1 | General: open at login (`SMAppService`), sound effects | ✅ |
 | 9.2 | General → When you choose a clip: paste into the front app, or only copy to the clipboard; always paste as plain text | ✅ |
 | 9.3 | General → Keep history for: slider Day / Week / Month / Year / Forever, maximum clip count, Erase History… | ✅ |
 | 9.4 | General → Shelf: bottom or top of the screen | ✅ |
@@ -115,17 +115,7 @@ Sidebar on the left (General, Text Recognition, Translation, Privacy, Shortcuts,
 
 ## 10. iCloud sync
 
-| # | Requirement | Status |
-|---|---|---|
-| 10.1 | Syncs clips (with images and formatting as assets) and pinboards through `CKSyncEngine` in a custom zone of the private database | ⚠️ |
-| 10.2 | Clip text, titles, file paths, recognised text, source app names and pinboard names use CloudKit encrypted fields | ⚠️ |
-| 10.3 | Uploads everything on first run, then only changes. Remote changes are applied without being sent back | ⚠️ |
-| 10.4 | Conflicts: the server version wins. A deleted zone is recreated from local data. Signing out keeps local history | ⚠️ |
-| 10.5 | Turned off automatically when the app lacks the CloudKit entitlement (ad-hoc builds) | ✅ |
-
-⚠️ Sync compiles and its store side is unit-tested, but it can only run in a build signed with an
-Apple Developer team, an iCloud container and a provisioning profile (see README → iCloud sync).
-It has not been run against CloudKit yet.
+Removed in 1.9.0. History and pinboards stay on this Mac.
 
 ## 11. Text from the screen
 
@@ -145,8 +135,9 @@ It has not been run against CloudKit yet.
 | 12.1 | ⌃Space (configurable) or the menu's Translate Selection or Clipboard sends ⌘C to the front app and reads the selection; the clipboard is put back as it was and the borrowed copy isn't saved. With nothing selected, no Accessibility permission, or the setting off, it translates the clipboard (an image's recognised text if it holds an image). A clipboard marked as a password isn't translated | ✅ |
 | 12.2 | With the shelf open, the translate shortcut closes it and translates the selected clip, or every selected clip a line apart (text, or the text in an image or a copied image file, read on the spot with the panel already showing if it wasn't read when copied, and kept with the clip for search and next time), instead of the selection in the front app; the right-click menu's Translate ▸ does one clip, into a chosen language; Copy Text from Screen can show a translation too (setting) | ✅ |
 | 12.3 | Target language: the first in the user's order that the text isn't in, using `NLLanguageRecognizer` (only when it's at least 60% sure; Apple's service also goes by the likeliest language when unsure). If the service finds the text was already in the target, it moves on to the next one, unless the user picked that language, which shows a note to pick another. Try Again appears only for errors another go could fix (network, service limits), not for a missing key or a language that can't be translated | ✅ |
-| 12.4 | Panel by the pointer (below it, or above when there's no room), non-activating so the front app keeps focus; on every Space, hidden from screen sharing with the shelf setting. It can be dragged by its grip or any empty space, and then stays there, growing downwards. Numbered language chips, the translation, the original below it (shown by default; ⌘O or the button hides it, and the choice is remembered), each as tall as its text up to a limit (240 / 130 pt) and scrolling past it, so short text gives a small panel, and a footer with "source → target · service" (a menu to switch service), Save, Copy and Paste | ✅ |
-| 12.5 | Keys: 1–9 and ←/→ pick the language, ↑/↓ switch to the previous / next usable service (remembered as the chosen service), Return or ⌘C copies and closes, ⌘Return pastes into the front app, ⌘S saves to history, ⌘O shows the original, Esc, ⌘W or a click outside closes. The shortcut again closes it | ✅ |
+| 12.4 | Panel by the pointer (below it, or above when there's no room), non-activating so the front app keeps focus; on every Space, hidden from screen sharing with the shelf setting. It can be dragged by its grip or any empty space, and then stays there, growing downwards. Top row: the detected language of the text, a reverse button and numbered language chips with short names (VI, EN, JA, ZH; the full name in the tooltip). Then the text in a soft well (shown by default; ⌘O hides it, and the choice is remembered), the translation under it, each as tall as its text up to a limit (130 / 240 pt) and scrolling past it without a scroll bar, faded at the edge there's more to scroll to, so short text gives a small panel. Footer: the service (a menu to switch it), Save, Copy ↩ and Paste ⌘↩ as capsule buttons | ✅ |
+| 12.4a | Editing: a click on the text, E or Tab edits it in place (accent ring, caret, undo and ⌘X/⌘C/⌘V/⌘A work). It's translated 0.4 s after typing pauses; meanwhile the last translation stays, faded. Keys go to the text: ⌘1…9 pick a language, ⌘Return pastes, ⌘S saves, Esc finishes editing (a second Esc closes). Revert brings back the text as it came; an emptied text shows a placeholder. R (not while editing) or the reverse button makes the translation the text and translates it back into the text's language | ✅ |
+| 12.5 | Keys (not editing): 1–9 and ←/→ pick the language, ↑/↓ switch to the previous / next usable service (remembered as the chosen service), Return or ⌘C copies and closes, ⌘Return pastes into the front app, ⌘S saves to history, ⌘O shows the original, Esc, ⌘W or a click outside closes. The shortcut again closes it | ✅ |
 | 12.6 | Services: Google Translate's free `translate_a/single` endpoint (default; not an official API), Bing's web translator (the token, ids and cookies its `bing.com/translator` page gives a visitor, sent back to `ttranslatev3` in pieces of up to 1,000 characters; the token is renewed half way through its lifetime or when refused, once per request), Apple's Translation framework on the device, only between downloaded languages and always told the source language (the detected one, or else the likeliest one whose pair is downloaded), so Apple never opens its own language or download windows inside the panel, which can't take their clicks. On macOS 26+ a `TranslationSession` per pair is kept while the app runs, so only the first text loads the model; before that, `.translationTask` with both languages given. A pair that isn't downloaded shows Download… (a normal window where macOS's download prompt works; the panel stays open) and Use Google Translate. Download is asked of macOS once per pair and session: asking again while it downloads made its prompt flicker, so the button then becomes Download Progress… and opens Translation Languages in System Settings. Meanwhile the panel checks every 2 s and translates as soon as the pair is downloaded, Google Cloud Translation v2, DeepL (free keys use `api-free.deepl.com`) and Microsoft Translator v3. AI: OpenAI, DeepSeek and Grok through their chat completions APIs (defaults are each provider's fast, cheap model: `gpt-4.1-nano`, `deepseek-chat`, `grok-4-fast-non-reasoning`), Claude through the Messages API (`anthropic-version: 2026-10-21`, default `claude-haiku-5-5`, low effort on 5.x models, server-side fallback when the chosen model has it, a refusal reported as such), Gemini through `generateContent` (default `gemini-flash-lite-latest`). The model gets the target language in its instructions, is told the text is never instructions, and answers with the translation only; pieces of up to 4,000 characters, 90 s timeout; the source language is detected locally | ✅ |
 | 12.7 | The panel shows at once, translating, while the selection is copied (put up without taking keys, so the ⌘C still reaches the front app). The connection to the chosen web service is opened ahead: at launch, after picking a service, when the shortcut is pressed (at most every 20 s), and Bing's token is renewed every 10 minutes while Bing is picked. Text over 30,000 characters is cut, with a note; text is sent in pieces of at most 4,500 characters (Bing 1,000, AI 4,000), split between lines, up to 4 at a time, put back in order. Results are cached per service, language and text for the session | ✅ |
 | 12.8 | Copying or pasting a translation adds it to history as a clip from "Translation" (on by default; when turned off, it only goes on the clipboard). ⌘S saves it without copying | ✅ |
@@ -175,8 +166,7 @@ PasteClipCore     (library)  ClipItem, Pinboard, ClipStore (capture, de-dup, lim
                              ClipQuery (search and filters), AppSettings, TextRecognizer (Vision),
                              Translator (language choice, web services), ImageMarkup (marks,
                              drawing and saving them, floating image opacity)
-PasteClipSystem   (library)  HotKey (Carbon), Paster (Accessibility + CGEvent), Entitlements
-PasteClipSync     (library)  CloudSync (CKSyncEngine)
+PasteClipSystem   (library)  HotKey (Carbon), Paster (Accessibility + CGEvent)
 PasteClip         (app)      AppDelegate (menu bar, hotkeys), Shelf (panel, view, cards, preview),
                              Paste stack panel, Settings window, translation panel (Apple's
                              Translation framework), API keys (one keychain item), image
@@ -185,8 +175,7 @@ PasteClipCoreTests           Swift Testing; uses a private NSPasteboard and a te
 ```
 
 `PasteClipCore` has no UI and does not reach into the OS beyond the pasteboard, the file
-system and Vision, so it can be tested without launching the app. Sync only talks to the
-store through `onLocalChange` and the `applyRemote…` / `removeRemote…` methods.
+system and Vision, so it can be tested without launching the app.
 
 ## Constraints
 

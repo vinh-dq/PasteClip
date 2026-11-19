@@ -2,7 +2,9 @@ import AppKit
 import LinkPresentation
 
 /// Fetches and remembers page titles, images and icons for link clips, for this session only.
-final class LinkPreviews: ObservableObject {
+/// Each link has a slot of its own that its card watches, so one preview arriving redraws that
+/// card only.
+final class LinkPreviews {
     struct Preview {
         var title: String?
         /// The page's own picture (its preview image), if it has one.
@@ -13,14 +15,25 @@ final class LinkPreviews: ObservableObject {
 
     static let shared = LinkPreviews()
 
-    @Published private(set) var previews: [String: Preview] = [:]
+    final class Slot: ObservableObject {
+        @Published fileprivate(set) var preview: Preview?
+    }
+
+    private var slots: [String: Slot] = [:]
     private var loading = Set<String>()
 
-    func preview(for link: String) -> Preview? { previews[link] }
+    func preview(for link: String) -> Preview? { slots[link]?.preview }
+
+    func slot(for link: String) -> Slot {
+        if let slot = slots[link] { return slot }
+        let slot = Slot()
+        slots[link] = slot
+        return slot
+    }
 
     /// Starts a fetch unless one already ran for this link.
     func load(_ link: String) {
-        guard previews[link] == nil, !loading.contains(link), let url = URL(string: link) else { return }
+        guard preview(for: link) == nil, !loading.contains(link), let url = URL(string: link) else { return }
         loading.insert(link)
         let provider = LPMetadataProvider()
         provider.timeout = 10
@@ -48,7 +61,7 @@ final class LinkPreviews: ObservableObject {
     private func finish(_ link: String, _ preview: Preview) {
         DispatchQueue.main.async {
             self.loading.remove(link)
-            self.previews[link] = preview
+            self.slot(for: link).preview = preview
         }
     }
 

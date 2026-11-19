@@ -1,6 +1,5 @@
 import AppKit
 import PasteClipCore
-import PasteClipSync
 import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
@@ -9,21 +8,19 @@ final class SettingsWindowController {
     private var window: NSWindow?
     private let settings: AppSettings
     private let store: ClipStore
-    private let sync: CloudSync
     private let keys: APIKeys
     private let page = ViewState(SettingsPage.general)
 
-    init(settings: AppSettings, store: ClipStore, sync: CloudSync, keys: APIKeys) {
+    init(settings: AppSettings, store: ClipStore, keys: APIKeys) {
         self.settings = settings
         self.store = store
-        self.sync = sync
         self.keys = keys
     }
 
     func show(_ initialPage: SettingsPage? = nil) {
         if let initialPage { page.value = initialPage }
         if window == nil {
-            let root = SettingsView(settings: settings, store: store, sync: sync, keys: keys, page: page)
+            let root = SettingsView(settings: settings, store: store, keys: keys, page: page)
             let window = NSWindow(contentViewController: NSHostingController(rootView: root))
             window.title = "PasteClip Settings"
             window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
@@ -58,7 +55,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     let store: ClipStore
-    @ObservedObject var sync: CloudSync
     let keys: APIKeys
     @ObservedObject var page: ViewState<SettingsPage>
 
@@ -107,7 +103,7 @@ struct SettingsView: View {
                 .padding(.top, 22)
             Group {
                 switch page.value {
-                case .general: GeneralPage(settings: settings, store: store, sync: sync)
+                case .general: GeneralPage(settings: settings, store: store)
                 case .text: TextRecognitionPage(settings: settings)
                 case .translation: TranslationPage(settings: settings, keys: keys)
                 case .privacy: PrivacyPage(settings: settings)
@@ -127,7 +123,6 @@ struct SettingsView: View {
 private struct GeneralPage: View {
     @ObservedObject var settings: AppSettings
     let store: ClipStore
-    @ObservedObject var sync: CloudSync
     @StateObject private var launchAtLogin = ViewState(SMAppService.mainApp.status == .enabled)
 
     var body: some View {
@@ -135,22 +130,6 @@ private struct GeneralPage: View {
             Section {
                 Toggle("Open at login", isOn: $launchAtLogin.value)
                     .onChange(of: launchAtLogin.value) { _, on in setLaunchAtLogin(on) }
-                LabeledContent {
-                    HStack(spacing: 8) {
-                        if settings.iCloudSync, CloudSync.isAvailable {
-                            Text(sync.status).foregroundStyle(.secondary)
-                        }
-                        Toggle("iCloud sync", isOn: $settings.iCloudSync)
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                            .disabled(!CloudSync.isAvailable)
-                    }
-                } label: {
-                    Text("iCloud sync")
-                    if !CloudSync.isAvailable {
-                        Text("Needs a signed build. See “iCloud sync” in the README.")
-                    }
-                }
                 Toggle("Sound effects", isOn: $settings.playSounds)
             }
 

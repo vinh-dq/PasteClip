@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import PasteClipCore
-import PasteClipSync
 import PasteClipSystem
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -9,9 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `--store <folder>` keeps history somewhere else, for trying things out without touching your own.
     private let store = ClipStore(directory: CommandLine.arguments.firstIndex(of: "--store")
         .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) : nil })
-    private lazy var sync = CloudSync(store: store)
     private lazy var apiKeys = APIKeys(directory: store.directory)
-    private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, sync: sync, keys: apiKeys)
+    private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, keys: apiKeys)
     private lazy var shelf = ShelfController(store: store, settings: settings) { [weak self] in
         self?.settingsWindow.show()
     }
@@ -136,14 +134,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] on in self?.stackPanel.setVisible(on) }
-            .store(in: &subscriptions)
-
-        settings.$iCloudSync
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] on in
-                guard let self, CloudSync.isAvailable else { return }
-                on ? self.sync.start() : self.sync.stop()
-            }
             .store(in: &subscriptions)
     }
 

@@ -46,16 +46,15 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Pinboards**: named, coloured collections for clips you want to keep
 - **Paste stack**: copy several things, then paste them one by one in the same order
 - **Copy text from the screen**: ⌥⇧⌘2, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
-- **Translate**: ⌃Space translates the selected text (or the clipboard) in a small panel by the pointer. It picks the language for you: Vietnamese text into English, anything else into Vietnamese; 1–4 switch between Vietnamese, English, Japanese and Chinese. Return copies, ⌘Return pastes the translation back into the app. With the shelf open, ⌃Space translates the selected clips instead. Uses Google Translate or Bing Translator (free, no key) or Apple's on-device translation; Google Cloud, DeepL and Microsoft, and the AI models of OpenAI, Claude, Gemini, DeepSeek and Grok, work with your own API key (the model can be chosen)
-- **Preview and edit**: Space for a large preview (Quick Look for images and files), give clips a title, edit text clips
+- **Translate**: ⌃Space translates the selected text (or the clipboard) in a small panel by the pointer. It picks the language for you: Vietnamese text into English, anything else into Vietnamese; 1–4 switch between Vietnamese, English, Japanese and Chinese. Click the text (or press E) to edit it in place: the translation follows as you type. R translates the translation back. Return copies, ⌘Return pastes the translation back into the app. With the shelf open, ⌃Space translates the selected clips instead. Uses Google Translate or Bing Translator (free, no key) or Apple's on-device translation; Google Cloud, DeepL and Microsoft, and the AI models of OpenAI, Claude, Gemini, DeepSeek and Grok, work with your own API key (the model can be chosen)
+- **Preview and edit**: Space for a large preview (Quick Look for images and files) with copy, translate, pin and edit at hand, give clips a title, edit text clips. Esc saves an edit everywhere, ⌥Esc discards it
 - **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
-- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T)
+- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit, Float and Translate (E, P and T with the pointer over it; typing elsewhere carries on)
 - **Translate images**: the translation drawn where the text is, like a camera translator. ⇧⌘2 does it for an area of the screen, in place; ⌃⌥Space for images in the shelf; T on a floating image. The translated image is saved as a clip (can be turned off in Settings → Translation)
 - **Float images**: ⌥⌘P keeps an image above every window. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
 - **Direct paste** into the current app, or paste as plain text (needs Accessibility permission)
 - **Privacy**: skips clips that password managers mark as private, and anything copied in apps you exclude
 - **Settings**: paste into the front app or only copy, always plain text, history retention, translation (languages and their order, service, API keys), privacy options (screen sharing, link previews, passwords, temporary clips, ignored apps), shortcuts, sounds, launch at login
-- **iCloud sync** of clips and pinboards (needs a signed build, see below)
 
 See [docs/SPEC.md](docs/SPEC.md) for the full functional spec.
 
@@ -103,14 +102,16 @@ turn it off there or pick another shortcut. Settings shows a warning next to any
 
 | Key | Action |
 |---|---|
-| 1…9 / ← → | Translate into another language |
+| 1…9 / ← → | Translate into another language (⌘1…⌘9 while editing) |
+| E / Tab / click the text | Edit the text; it's translated again as you type. Esc finishes editing; Revert brings back the text as it came |
+| R | Translate the translation back, into the language the text was in |
 | ↑ ↓ | Switch to the previous / next translation service |
 | Return / ⌘C | Copy the translation |
 | ⌘Return | Paste it into the app you were using, replacing the selection |
 | ⌘S | Save it to history |
-| ⌘O | Show or hide the original |
+| ⌘O | Show or hide the text being translated |
 | ⌘I | Show on Image: the image floated with the translation where its text was (when translating an image) |
-| Esc / click outside | Close |
+| Esc / click outside | Close (while editing, Esc first finishes editing) |
 
 ## In the image editor
 
@@ -148,47 +149,28 @@ These work with the pointer over the image, without clicking it first.
 | ← → | Select a card |
 | ⇧← ⇧→ / ⇧-click | Select several cards in a row |
 | ⌘-click | Add a card to the selection, or take it out |
-| ⌘A | Select every card (when the search is empty) |
+| ⌘A | Select every card (when the search is empty; otherwise the search text) |
 | Return / double-click | Paste into the app you were using (hold ⇧ for plain text). With several cards selected, Return pastes them together, a line apart |
-| ⌘R / double-click a card's label | Name the clip; the name shows on the card instead of the time (Return saves, Esc cancels, empty removes it) |
-| ⌘1…⌘9 | Paste a card quickly (hold ⌘ to see the numbers) |
+| ⌘R / double-click a card's label | Name the clip; the name shows on the card instead of the time (Return or Esc saves, ⌥Esc cancels, empty removes it) |
+| ⌘1…⌘9 | Paste a card quickly (hold ⌘ to see the numbers; hold it a moment longer to see the shelf's keys) |
 | Space / ⌘Y | Preview in a popup above the card; ← → move it to the next clip (Space works when the search field is empty) |
-| ⌘E | Edit a text clip (⌘S saves, Esc cancels), or mark up an image (also a single copied image file) |
+| ⌘E | Edit a text clip (Esc or ⌘S saves, ⌥Esc discards), or mark up an image (also a single copied image file) |
 | ⌥⌘P | Float the selected images on the screen (configurable) |
 | ⌘P | Pin / unpin |
-| ⌘C | Copy without pasting (several cards: copied together) |
+| ⌘C | Copy without pasting, and close (several cards: copied together; text selected in the search or the preview is copied as text) |
+| ⌘V ⌘X ⌘Z | Edit the search text |
 | ⌃Space (the translate shortcut) | Translate the selected clips: text, or the text in an image (read on the spot if it hasn't been yet) |
 | ⌘I | Show only images (the Images button), or every type again |
 | ⌃⌥Space | Float the selected images, translated where their text is (configurable) |
 | ⌘⌫ | Delete (every selected card) |
 | ⌘→ / ⌘← or Tab / ⇧Tab | Next / previous pinboard |
-| ⌘N | New text item |
+| ⌘N | New text item (Esc saves, ⌥Esc discards) |
 | ⌘F | Search |
 | ⌘, | Settings |
 | Esc / click outside | Clear a selection of several cards, then close |
 
 Right-click a card to add it to a pinboard or the paste stack. Right-click a pinboard tab to edit or delete it.
 Drag a pinboard tab onto another to reorder the pinboards, and drag cards within a pinboard to arrange them.
-
-## iCloud sync
-
-Sync uses CloudKit, which only works in an app signed by an Apple Developer team. Ad-hoc
-builds hide the option. To build a copy that can sync:
-
-1. In the Apple Developer site, register the App ID `io.github.vinh-dq.pasteclip` (or change
-   `CFBundleIdentifier` in `Resources/Info.plist`) with iCloud (CloudKit) enabled, and create
-   the container `iCloud.<bundle id>`.
-2. Create a Developer ID provisioning profile for that App ID and download it.
-3. Build and sign:
-
-   ```sh
-   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" TEAM_ID=TEAMID \
-   PROVISIONING_PROFILE=~/Downloads/PasteClip.provisionprofile ./scripts/bundle.sh
-   ```
-
-4. Turn on Settings → Sync on each Mac signed in to the same Apple Account.
-
-Clip contents are stored in CloudKit encrypted fields. The paste stack is never synced.
 
 ## Architecture
 
@@ -206,9 +188,6 @@ Sources/
   PasteClipSystem/        Library, OS integration
     HotKey.swift          Global hotkeys through Carbon RegisterEventHotKey
     Paster.swift          Sends ⌘V through CGEvent
-    Entitlements.swift    Reads the app's signing entitlements
-  PasteClipSync/          Library
-    CloudSync.swift       iCloud sync through CKSyncEngine
   PasteClip/              The app
     main.swift            Entry point; runs as an accessory app (no Dock icon)
     AppDelegate.swift     Menu bar item, hotkeys, wiring
@@ -226,7 +205,7 @@ Sources/
     ImageTranslator.swift Reads, translates and redraws an image with the chosen service
     ViewState.swift       Stand-in for @State (see below)
 Tests/
-  PasteClipCoreTests/     Capture, rich text, de-dup, limits, pinboards and their order, stack, query, sync hooks
+  PasteClipCoreTests/     Capture, rich text, de-dup, limits, pinboards and their order, stack, query
 ```
 
 How it works: macOS has no notification for clipboard changes, so `ClipStore` checks

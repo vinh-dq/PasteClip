@@ -411,12 +411,9 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
     #expect(store.pinboards.map(\.name) == ["A", "B", "C"])
     store.movePinboard(a.id, to: 1)
     #expect(store.pinboards.map(\.name) == ["B", "A", "C"])
-    // New pinboards go at the end; a synced one lands by its order.
+    // New pinboards go at the end.
     store.createPinboard(name: "D", colorIndex: 3)
-    var remote = store.pinboards[0]
-    remote.order = 10
-    store.applyRemote(remote)
-    #expect(store.pinboards.map(\.name) == ["A", "C", "D", "B"])
+    #expect(store.pinboards.map(\.name) == ["B", "A", "C", "D"])
 }
 
 @Test func duplicateKeepsIdentityTitleAndBoard() {
@@ -523,43 +520,6 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
     store.addToStack(store.items[0])
     store.delete(store.items[1])
     #expect(store.popStack()?.text == "b")
-}
-
-// MARK: - Sync hooks
-
-@Test func reportsLocalChangesButNotRemoteOnes() {
-    let (store, _, _) = makeStore()
-    var saved: [SyncRecord] = []
-    var deleted: [SyncRecord] = []
-    store.onLocalChange = { saved += $0; deleted += $1 }
-
-    store.insert(ClipItem(kind: .text, text: "a"))
-    let id = store.items[0].id
-    store.delete(store.items[0])
-    #expect(saved == [.clip(id)])
-    #expect(deleted == [.clip(id)])
-
-    saved = []
-    var remote = ClipItem(kind: .text, text: "from another Mac")
-    remote.date = Date().addingTimeInterval(-60)
-    store.applyRemote(remote, imageSource: nil, richSource: nil)
-    store.applyRemote(Pinboard(name: "Shared", colorIndex: 1))
-    #expect(saved.isEmpty)
-    #expect(store.items.map(\.text) == ["from another Mac"])
-    #expect(store.pinboards.count == 1)
-
-    store.removeRemoteClip(remote.id)
-    #expect(store.items.isEmpty)
-    #expect(deleted == [.clip(id)])
-}
-
-@Test func remoteClipsAreOrderedByDate() {
-    let (store, _, _) = makeStore()
-    store.insert(ClipItem(kind: .text, text: "now"))
-    var older = ClipItem(kind: .text, text: "older")
-    older.date = Date().addingTimeInterval(-3600)
-    store.applyRemote(older, imageSource: nil, richSource: nil)
-    #expect(store.items.map(\.text) == ["now", "older"])
 }
 
 // MARK: - Query
@@ -691,10 +651,7 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
         store.poll()
     }
     store.addToStack(store.items[0])
-    var deleted: [SyncRecord] = []
-    store.onLocalChange = { _, gone in deleted += gone }
     store.delete([store.items[0], store.items[2]])
     #expect(store.items.map(\.text) == ["c", "a"])
     #expect(store.stack.isEmpty)
-    #expect(deleted.count == 2)
 }

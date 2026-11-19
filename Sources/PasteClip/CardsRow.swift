@@ -45,6 +45,9 @@ struct CardsRow: View {
                 .background { ScrollFollower(selection: selection, items: items, proxy: proxy) }
             }
             .overlay(alignment: .bottom) { SelectionHint(selection: selection) }
+            .overlay(alignment: .bottom) {
+                ShelfKeysHint(keys: state.heldKeys, selection: selection, translateKey: settings.translateHotKey?.display)
+            }
         }
     }
 
@@ -217,6 +220,7 @@ private struct SelectionRing: ViewModifier {
     let id: UUID
     /// Set while the preview is open, to report where the selected card is.
     let cardFrame: CardFrameTracker?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let selected = selection.isSelected(index, id: id)
@@ -250,10 +254,11 @@ private struct SelectionRing: ViewModifier {
                         .transition(.scale(scale: 0.5).combined(with: .opacity))
                 }
             }
-            .scaleEffect(selected ? 1.03 : 1)
-            .offset(y: selected ? -3 : 0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.72), value: selected)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: several)
+            // With Reduce Motion on, the ring alone marks the selection: nothing grows or springs.
+            .scaleEffect(selected && !reduceMotion ? 1.03 : 1)
+            .offset(y: selected && !reduceMotion ? -3 : 0)
+            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.72), value: selected)
+            .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: several)
             .background { if focused, let cardFrame { frameReporter(cardFrame) } }
     }
 
@@ -284,13 +289,18 @@ private enum RowEntry: Identifiable {
 /// the row redraws only the cards entered and left.
 private struct HoverLift: ViewModifier {
     @StateObject private var hovering = ViewState(false)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        content
-            .scaleEffect(hovering.value ? 1.015 : 1)
-            .offset(y: hovering.value ? -2 : 0)
-            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: hovering.value)
-            .onHover { hovering.value = $0 }
+        if reduceMotion {
+            content
+        } else {
+            content
+                .scaleEffect(hovering.value ? 1.015 : 1)
+                .offset(y: hovering.value ? -2 : 0)
+                .animation(.spring(response: 0.28, dampingFraction: 0.75), value: hovering.value)
+                .onHover { hovering.value = $0 }
+        }
     }
 }
 
@@ -300,6 +310,7 @@ private struct QuickPasteNumber: ViewModifier {
     @ObservedObject var keys: HeldKeys
     let index: Int
     let symbol: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .bottomTrailing) {
@@ -311,10 +322,10 @@ private struct QuickPasteNumber: ViewModifier {
                     .frame(height: 22)
                     .background(Capsule().fill(Color.black.opacity(0.68)))
                     .padding(9)
-                    .transition(.scale(scale: 0.7).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.7).combined(with: .opacity))
             }
         }
-        .animation(.spring(response: 0.22, dampingFraction: 0.7), value: keys.quickPaste)
+        .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.22, dampingFraction: 0.7), value: keys.quickPaste)
     }
 }
 
@@ -368,6 +379,46 @@ private struct SelectionHint: View {
             .padding(.bottom, 2)
             .allowsHitTesting(false)
             .transition(.opacity)
+        }
+    }
+}
+
+/// The shelf's keys, shown while the quick-paste modifier is held a moment, next to the cards'
+/// numbers: the keys are there to find without cluttering the shelf the rest of the time.
+private struct ShelfKeysHint: View {
+    @ObservedObject var keys: HeldKeys
+    @ObservedObject var selection: SelectionModel
+    let translateKey: String?
+
+    var body: some View {
+        if keys.showsKeys, selection.picked.count <= 1 {
+            HStack(spacing: 12) {
+                hint("Space", "Preview")
+                hint("⌘E", "Edit")
+                hint("⌘R", "Rename")
+                hint("⌘P", "Pin")
+                if let translateKey { hint(translateKey, "Translate") }
+                hint("⌘C", "Copy")
+                hint("⌘⌫", "Delete")
+                hint("Tab", "Pinboards")
+                hint("⌘F", "Search")
+            }
+            .font(.system(size: 11.5))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .glassCapsule()
+            .padding(.bottom, 2)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+
+    private func hint(_ key: String, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            KeyHint(keys: key)
+            Text(title).foregroundStyle(.secondary)
         }
     }
 }

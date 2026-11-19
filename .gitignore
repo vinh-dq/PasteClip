@@ -3,3 +3,7 @@ build/
 dist/
 .DS_Store
 .swiftpm/
+
+# Local Claude guidance, not published
+CLAUDE.md
+.claude/

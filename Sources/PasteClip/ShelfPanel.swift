@@ -39,6 +39,8 @@ final class ShelfController {
     /// Gap between the floating shelf and the screen edges.
     private let margin: CGFloat = 10
     private let popup: PreviewPopupController
+    private let toast = Toast()
+    private static var askedForTrust = false
     private var subscriptions = Set<AnyCancellable>()
 
     var onPasted: () -> Void = {}
@@ -56,8 +58,9 @@ final class ShelfController {
         self.store = store
         self.settings = settings
         state = ShelfState(store: store)
-        popup = PreviewPopupController(state: state, store: store)
+        popup = PreviewPopupController(state: state, store: store, settings: settings)
         state.onPaste = { [weak self] item, plain in self?.paste([item], plainText: plain) }
+        state.onCopy = { [weak self] item in self?.copy([item]) }
         state.onPasteMany = { [weak self] items, plain in self?.paste(items, plainText: plain) }
         state.onTranslate = { [weak self] item, target in
             guard let self else { return }
@@ -196,14 +199,28 @@ final class ShelfController {
         onTranslateImages(images)
     }
 
+    private func copy(_ items: [ClipItem]) {
+        guard !items.isEmpty else { return }
+        store.copyToPasteboard(items)
+        hide()
+    }
+
     private func paste(_ items: [ClipItem], plainText: Bool) {
         guard !items.isEmpty else { return }
         store.copyToPasteboard(items, plainText: plainText || settings.alwaysPlainText)
         hide()
         guard settings.pasteMode == .frontApp else { return }
-        // Without Accessibility permission macOS drops the ⌘V. Ask, rather than failing silently;
-        // the clip is already on the clipboard either way.
-        guard Paster.isTrusted else { Paster.requestTrust(); return }
+        // Without Accessibility permission macOS drops the ⌘V. The clip is on the clipboard either
+        // way: say so, and ask for the permission once a launch rather than at every paste.
+        guard Paster.isTrusted else {
+            toast.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
+            toast.show("Copied. Press ⌘V to paste", symbol: "doc.on.clipboard")
+            if !Self.askedForTrust {
+                Self.askedForTrust = true
+                Paster.requestTrust()
+            }
+            return
+        }
         Paster.pasteIntoFrontApp(after: 0.2)
         onPasted()
     }
@@ -290,32 +307,18 @@ final class ShelfController {
     /// Returns true when the key was handled and shouldn't reach the focused text field.
     private func handle(_ event: NSEvent) -> Bool {
         let typing = state.renamingID != nil || state.composing || state.textInputActive
-        if typing, performEditCommand(event) { return true }
+        if typing, EditCommands.perform(event) { return true }
         // Renaming a card: every key goes to its title field (Return saves, Esc cancels).
         if state.renamingID != nil { return false }
         if state.composing {
-            if event.keyCode == 53 { state.closePreview(); return true } // Esc
+            // Esc saves the new clip, ⌥Esc discards it, as in every editor.
+            if event.keyCode == 53 {
+                if flags(event).contains(.option) { state.closePreview() } else { state.commitEdit?() ?? state.closePreview() }
+                return true
+            }
             return false
         }
         return state.previewing ? handlePreviewKey(event) : handleShelfKey(event)
-    }
-
-    /// ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V and ⌘A for the focused text field. The app has no Edit menu (it lives
-    /// in the menu bar only), so nothing else turns these keys into actions.
-    private func performEditCommand(_ event: NSEvent) -> Bool {
-        let f = flags(event)
-        guard f == .command || f == [.command, .shift], let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
-        let action: Selector
-        switch (key, f.contains(.shift)) {
-        case ("z", false): action = Selector(("undo:"))
-        case ("z", true): action = Selector(("redo:"))
-        case ("x", false): action = #selector(NSText.cut(_:))
-        case ("c", false): action = #selector(NSText.copy(_:))
-        case ("v", false): action = #selector(NSText.paste(_:))
-        case ("a", false): action = #selector(NSText.selectAll(_:))
-        default: return false
-        }
-        return NSApp.sendAction(action, to: nil, from: nil)
     }
 
     private func flags(_ event: NSEvent) -> NSEvent.ModifierFlags {
@@ -352,7 +355,13 @@ final class ShelfController {
     private func handlePreviewKey(_ event: NSEvent) -> Bool {
         let cmd = event.modifierFlags.contains(.command)
         if event.keyCode == 53 {                                       // Esc
-            if state.editing { state.editing = false } else { state.closePreview() }
+            if state.editing {
+                // Saves, as in every editor; ⌥Esc discards.
+                if !flags(event).contains(.option) { state.commitEdit?() }
+                state.editing = false
+            } else {
+                state.closePreview()
+            }
             return true
         }
         // Let typing reach the title field or the text editor.
@@ -373,6 +382,15 @@ final class ShelfController {
         default: break
         }
         if cmd, chars == "y" { state.closePreview(); return true }
+        if flags(event) == .command, chars == "c" {
+            // Text selected in the popup is copied as such; otherwise the clip, as on the shelf.
+            if let field = popup.panel.firstResponder as? NSTextView, field.selectedRange().length > 0 {
+                field.copy(nil)
+            } else if let item = state.selectedItem {
+                copy([item])
+            }
+            return true
+        }
         if matches(settings.floatImageKey, event), let item = state.selectedItem { floatImages([item]); return true }
         if cmd, chars == "e", let item = state.selectedItem {
             if item.isTextual { state.editing = true } else { editImage(item) }
@@ -433,6 +451,11 @@ final class ShelfController {
         }
 
         guard cmd, let chars = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        // Editing keys belong to the search field, which takes the shelf's typing.
+        let searchSelection = (panel.firstResponder as? NSTextView)?.selectedRange().length ?? 0
+        if ["v", "x", "z"].contains(chars) || (chars == "c" && searchSelection > 0) || (chars == "a" && !state.query.text.isEmpty) {
+            return EditCommands.perform(event)
+        }
         switch chars {
         case "n":
             state.startComposing()
@@ -455,10 +478,9 @@ final class ShelfController {
             if let item = state.selectedItem { store.togglePin(item) }
             return true
         case "c":
-            let items = state.selectedItems
-            if !items.isEmpty { store.copyToPasteboard(items); hide() }
+            copy(state.selectedItems)
             return true
-        case "a" where state.query.text.isEmpty:
+        case "a":
             state.selectionModel.selectAll(state.visible)
             return true
         case "f":

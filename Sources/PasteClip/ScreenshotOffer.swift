@@ -4,8 +4,9 @@ import SwiftUI
 
 /// After a screenshot: a small card in the bottom corner of the screen with the picture and what
 /// can be done with it next, Edit E, Float P and Translate T, so there's no setting to change
-/// first. It takes those keys at once (the app in front keeps its focus otherwise), goes on its
-/// own after a few seconds unless the pointer is over it, and Esc or any other key closes it.
+/// first. The app in front keeps the keyboard, so typing carries on; with the pointer over the
+/// card it takes those keys (Esc or any other key closes it). It goes on its own after a few
+/// seconds unless the pointer is over it.
 final class ScreenshotOffer {
     enum Choice { case edit, float, translate }
 
@@ -26,9 +27,7 @@ final class ScreenshotOffer {
         let hosting = NSHostingView(rootView: OfferView(
             image: image, choose: pick,
             close: { [weak self] in self?.close() },
-            hover: { [weak self] inside in
-                if inside { self?.closeWork?.cancel() } else { self?.closeLater() }
-            }))
+            hover: { [weak self] inside in self?.hover(inside) }))
         // Rounded as its glass, so the window's shadow is too.
         hosting.wantsLayer = true
         hosting.layer?.cornerRadius = 16
@@ -52,7 +51,6 @@ final class ScreenshotOffer {
         panel.sharingType = sharingType
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        panel.makeKey()
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -75,6 +73,18 @@ final class ScreenshotOffer {
             panel.animator().setFrame(panel.frame.offsetBy(dx: 24, dy: 0), display: true)
             panel.animator().alphaValue = 0
         }, completionHandler: { panel.orderOut(nil) })
+    }
+
+    /// Takes the keys while the pointer is over the card, and gives them back when it leaves.
+    private func hover(_ inside: Bool) {
+        guard let panel else { return }
+        if inside {
+            closeWork?.cancel()
+            panel.makeKey()
+        } else {
+            closeLater()
+            if panel.isKeyWindow { NSWorkspace.shared.frontmostApplication?.activate() }
+        }
     }
 
     private func closeLater() {
@@ -123,9 +133,13 @@ private struct OfferView: View {
         VStack(spacing: 6) {
             thumbnail
             HStack(spacing: 4) {
-                OfferButton(title: "Edit", symbol: "pencil.tip", key: "E") { choose(.edit) }
-                OfferButton(title: "Float", symbol: "pin", key: "P") { choose(.float) }
-                OfferButton(title: "Translate", symbol: "character.bubble", key: "T") { choose(.translate) }
+                // The keys work while the pointer is over the card, so that's when they show.
+                CapsuleButton(title: "Edit", symbol: "pencil.tip", key: hovering.value ? "E" : nil, expands: true,
+                              help: "Edit (E)") { choose(.edit) }
+                CapsuleButton(title: "Float", symbol: "pip", key: hovering.value ? "P" : nil, expands: true,
+                              help: "Float (P)") { choose(.float) }
+                CapsuleButton(title: "Translate", symbol: "character.bubble", key: hovering.value ? "T" : nil, expands: true,
+                              help: "Translate (T)") { choose(.translate) }
             }
         }
         .padding(6)
@@ -163,33 +177,5 @@ private struct OfferView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
-    }
-}
-
-private struct OfferButton: View {
-    let title: String
-    let symbol: String
-    let key: String
-    let action: () -> Void
-    @StateObject private var hovering = ViewState(false)
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: symbol).font(.system(size: 11, weight: .medium))
-                Text(title).font(.system(size: 11.5, weight: .medium)).lineLimit(1).fixedSize()
-                Text(key)
-                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.primary.opacity(hovering.value ? 0.1 : 0.05)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hovering.value = inside } }
-        .help("\(title) (\(key))")
     }
 }

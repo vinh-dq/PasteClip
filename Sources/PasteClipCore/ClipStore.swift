@@ -1,12 +1,6 @@
 import AppKit
 import Combine
 
-/// A record that sync mirrors: one clip or one pinboard.
-public enum SyncRecord: Hashable {
-    case clip(UUID)
-    case pinboard(UUID)
-}
-
 /// Watches the pasteboard and keeps a persisted history of clips, the user's pinboards
 /// and the paste stack. Clips are always ordered newest first.
 public final class ClipStore: ObservableObject {
@@ -42,8 +36,6 @@ public final class ClipStore: ObservableObject {
 
     /// Called after a clip is captured from the pasteboard.
     public var onCapture: ((ClipItem) -> Void)?
-    /// Called after a local edit, with the records to upload and to delete. Remote changes don't trigger it.
-    public var onLocalChange: ((_ saved: [SyncRecord], _ deleted: [SyncRecord]) -> Void)?
 
     public let directory: URL
     private let pasteboard: NSPasteboard
@@ -258,9 +250,8 @@ public final class ClipStore: ObservableObject {
             stack.removeAll { $0 == item.id }
             stack.append(item.id)
         }
-        let removed = applyLimits()
+        applyLimits()
         save()
-        notify(saved: [.clip(item.id)], deleted: removed)
         if item.kind == .image, item.ocrText == nil { recognizeText(in: item) }
         return item
     }
@@ -275,7 +266,6 @@ public final class ClipStore: ObservableObject {
             if let self, let text, let i = self.index(of: item.id) {
                 self.items[i].ocrText = text
                 self.save()
-                self.notify(saved: [.clip(item.id)], deleted: [])
             }
             completion(text)
         }
@@ -287,19 +277,16 @@ public final class ClipStore: ObservableObject {
             guard let self, let text, let i = self.index(of: item.id) else { return }
             self.items[i].ocrText = text
             self.save()
-            self.notify(saved: [.clip(item.id)], deleted: [])
         }
     }
 
     private func limitsChanged() {
-        let removed = applyLimits()
-        guard !removed.isEmpty else { return }
-        save()
-        notify(saved: [], deleted: removed)
+        if applyLimits() { save() }
     }
 
-    /// Drops unkept clips beyond the history limit or older than the retention period.
-    private func applyLimits() -> [SyncRecord] {
+    /// Drops unkept clips beyond the history limit or older than the retention period. True if any were.
+    @discardableResult
+    private func applyLimits() -> Bool {
         let cutoff = retentionDays > 0 ? Date().addingTimeInterval(-Double(retentionDays) * 86_400) : nil
         var count = 0
         var removed: [ClipItem] = []
@@ -315,7 +302,7 @@ public final class ClipStore: ObservableObject {
         removed.forEach(deleteFiles)
         let ids = Set(removed.map(\.id))
         stack.removeAll { ids.contains($0) }
-        return ids.map { .clip($0) }
+        return !ids.isEmpty
     }
 
     // MARK: - Clip actions
@@ -373,7 +360,6 @@ public final class ClipStore: ObservableObject {
         moved.date = Date()
         items.insert(moved, at: 0)
         save()
-        notify(saved: [.clip(item.id)], deleted: [])
     }
 
     /// Puts several clips on the pasteboard to paste together, in the order given. Text goes as
@@ -422,7 +408,6 @@ public final class ClipStore: ObservableObject {
             self.items.insert(moved, at: 0)
         }
         save()
-        notify(saved: items.map { .clip($0.id) }, deleted: [])
     }
 
     /// Puts text on the clipboard without adding it to history.
@@ -520,7 +505,6 @@ public final class ClipStore: ObservableObject {
         self.items.removeAll { ids.contains($0.id) }
         stack.removeAll { ids.contains($0) }
         save()
-        notify(saved: [], deleted: current.map { .clip($0.id) })
     }
 
     public func clearHistory() {
@@ -529,14 +513,12 @@ public final class ClipStore: ObservableObject {
         items.removeAll { !$0.isKept }
         stack.removeAll { id in removed.contains { $0.id == id } }
         save()
-        notify(saved: [], deleted: removed.map { .clip($0.id) })
     }
 
     private func update(_ id: UUID, _ change: (inout ClipItem) -> Void) {
         guard let i = index(of: id) else { return }
         change(&items[i])
         save()
-        notify(saved: [.clip(id)], deleted: [])
     }
 
     // MARK: - Pinboards
@@ -548,7 +530,6 @@ public final class ClipStore: ObservableObject {
         if let last = pinboards.compactMap(\.order).max() { board.order = last + 1 }
         pinboards.append(board)
         save()
-        notify(saved: [.pinboard(board.id)], deleted: [])
         return board
     }
 
@@ -556,19 +537,13 @@ public final class ClipStore: ObservableObject {
         guard let i = pinboards.firstIndex(where: { $0.id == board.id }) else { return }
         pinboards[i] = board
         save()
-        notify(saved: [.pinboard(board.id)], deleted: [])
     }
 
     /// Deletes the pinboard. Its clips stay in history.
     public func deletePinboard(_ board: Pinboard) {
         pinboards.removeAll { $0.id == board.id }
-        var changed: [SyncRecord] = []
-        for i in items.indices where items[i].pinboardID == board.id {
-            items[i].pinboardID = nil
-            changed.append(.clip(items[i].id))
-        }
+        for i in items.indices where items[i].pinboardID == board.id { items[i].pinboardID = nil }
         save()
-        notify(saved: changed, deleted: [.pinboard(board.id)])
     }
 
     /// Moves the pinboard to `index` among the pinboards.
@@ -578,7 +553,6 @@ public final class ClipStore: ObservableObject {
         pinboards.insert(board, at: min(max(index, 0), pinboards.count))
         for i in pinboards.indices { pinboards[i].order = Double(i) }
         save()
-        notify(saved: pinboards.map { .pinboard($0.id) }, deleted: [])
     }
 
     /// Moves a clip onto a pinboard, at the front, or off any pinboard when `board` is nil.
@@ -604,14 +578,10 @@ public final class ClipStore: ObservableObject {
         // Renumber from the current front, so clips added later still go before these.
         let base = items.filter { $0.pinboardID == board }.map(\.boardKey).min() ?? 0
         let position = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($1, base + Double($0)) })
-        var changed: [SyncRecord] = []
         for i in items.indices {
-            guard let p = position[items[i].id], items[i].boardOrder != p else { continue }
-            items[i].boardOrder = p
-            changed.append(.clip(items[i].id))
+            if let p = position[items[i].id] { items[i].boardOrder = p }
         }
         save()
-        notify(saved: changed, deleted: [])
     }
 
     // MARK: - Paste stack
@@ -693,73 +663,8 @@ public final class ClipStore: ObservableObject {
         if let name = item.pasteboardFile { try? FileManager.default.removeItem(at: richDir.appendingPathComponent(name)) }
     }
 
-    // MARK: - Sync
-
-    public var allSyncRecords: [SyncRecord] {
-        pinboards.map { .pinboard($0.id) } + items.map { .clip($0.id) }
-    }
-
     public func pinboard(withID id: UUID) -> Pinboard? {
         pinboards.first { $0.id == id }
-    }
-
-    /// Stores a clip that came from another Mac. Asset files are copied into the store.
-    public func applyRemote(_ remote: ClipItem, imageSource: URL?, richSource: URL?) {
-        var item = remote
-        let old = self.item(withID: item.id)
-        item.imageFile = copyIn(imageSource, to: imageDir, name: "\(item.id.uuidString).png") ?? old?.imageFile
-        if let type = item.richType {
-            item.richFile = copyIn(richSource, to: richDir, name: "\(item.id.uuidString).\(type)") ?? old?.richFile
-        } else {
-            item.richFile = nil
-        }
-        // The source app's formats aren't synced; they stay while the text is unchanged.
-        if let old, old.text == item.text {
-            item.pasteboardFile = old.pasteboardFile
-        } else if let old, let name = old.pasteboardFile {
-            try? FileManager.default.removeItem(at: richDir.appendingPathComponent(name))
-        }
-        if let name = item.imageFile { imageCache.removeObject(forKey: name as NSString) }
-        items.removeAll { $0.id == item.id }
-        let at = items.firstIndex { $0.date < item.date } ?? items.endIndex
-        items.insert(item, at: at)
-        save()
-    }
-
-    public func removeRemoteClip(_ id: UUID) {
-        guard let item = item(withID: id) else { return }
-        deleteFiles(of: item)
-        items.removeAll { $0.id == id }
-        stack.removeAll { $0 == id }
-        save()
-    }
-
-    public func applyRemote(_ board: Pinboard) {
-        if let i = pinboards.firstIndex(where: { $0.id == board.id }) {
-            pinboards[i] = board
-        } else {
-            pinboards.append(board)
-        }
-        pinboards.sort { ($0.order ?? .infinity, $0.created) < ($1.order ?? .infinity, $1.created) }
-        save()
-    }
-
-    public func removeRemotePinboard(_ id: UUID) {
-        pinboards.removeAll { $0.id == id }
-        for i in items.indices where items[i].pinboardID == id { items[i].pinboardID = nil }
-        save()
-    }
-
-    private func copyIn(_ source: URL?, to dir: URL, name: String) -> String? {
-        guard let source else { return nil }
-        let dest = dir.appendingPathComponent(name)
-        try? FileManager.default.removeItem(at: dest)
-        return (try? FileManager.default.copyItem(at: source, to: dest)) != nil ? name : nil
-    }
-
-    private func notify(saved: [SyncRecord], deleted: [SyncRecord]) {
-        guard !saved.isEmpty || !deleted.isEmpty else { return }
-        onLocalChange?(saved, deleted)
     }
 
     // MARK: - Persistence

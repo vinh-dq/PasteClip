@@ -16,8 +16,8 @@ struct ClipCard: View, Equatable {
     let showLinkPreview: Bool
     var renaming = false
     var onEndRenaming: () -> Void = {}
-    @ObservedObject var links = LinkPreviews.shared
-    @ObservedObject var thumbnails = FileThumbnails.shared
+    private var links: LinkPreviews { .shared }
+    private var thumbnails: FileThumbnails { .shared }
     @StateObject private var hovering = ViewState(false)
 
     static let size = CGSize(width: 220, height: 236)
@@ -175,29 +175,38 @@ struct ClipCard: View, Equatable {
         case .link:
             linkContent
         case .image:
-            if let path = store.imageURL(for: item)?.path, let thumb = thumbnails.thumbnail(for: path) {
-                picture(thumb)
+            if let path = store.imageURL(for: item)?.path {
+                Watching(thumbnails.slot(for: path)) { slot in
+                    if let image = slot.image { picture(image) } else { Color.primary.opacity(0.04) }
+                }
             } else {
                 Color.primary.opacity(0.04)
             }
         case .file:
-            if let path = item.filePaths?.first, let thumb = thumbnails.thumbnail(for: path) {
-                picture(thumb)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array((item.filePaths ?? []).prefix(4)), id: \.self) { path in
-                        HStack(spacing: 8) {
-                            Image(nsImage: FileThumbnails.icon(for: path)).resizable().frame(width: 28, height: 28)
-                            Text((path as NSString).lastPathComponent).font(.system(size: 12)).lineLimit(1)
-                        }
-                    }
+            if let path = item.filePaths?.first {
+                Watching(thumbnails.slot(for: path)) { slot in
+                    if let image = slot.image { picture(image) } else { fileList }
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, Self.labelHeight + 4)
+            } else {
+                fileList
             }
         case .color:
             colorContent
         }
+    }
+
+    /// The copied files' icons and names, until a thumbnail of the first one is ready.
+    private var fileList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array((item.filePaths ?? []).prefix(4)), id: \.self) { path in
+                HStack(spacing: 8) {
+                    Image(nsImage: FileThumbnails.icon(for: path)).resizable().frame(width: 28, height: 28)
+                    Text((path as NSString).lastPathComponent).font(.system(size: 12)).lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, Self.labelHeight + 4)
     }
 
     /// Text that reads as code: indented lines, or braces and semicolons ending them.
@@ -232,7 +241,15 @@ struct ClipCard: View, Equatable {
     /// it's sharp enough to be worth showing.
     @ViewBuilder
     private var linkContent: some View {
-        let preview = showLinkPreview ? links.preview(for: item.text ?? "") : nil
+        if showLinkPreview {
+            Watching(links.slot(for: item.text ?? "")) { slot in linkContent(slot.preview) }
+        } else {
+            linkContent(nil)
+        }
+    }
+
+    @ViewBuilder
+    private func linkContent(_ preview: LinkPreviews.Preview?) -> some View {
         let host = URL(string: item.text ?? "")?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
         let picture = preview?.image.flatMap { Self.isSharp($0) ? $0 : nil }
         VStack(alignment: .leading, spacing: 9) {
@@ -352,8 +369,8 @@ private extension View {
     }
 }
 
-/// Edits a clip's name in its card's label. Return or clicking elsewhere saves; Esc cancels;
-/// an empty name takes it off.
+/// Edits a clip's name in its card's label. Return, Esc or clicking elsewhere saves, as in every
+/// editor; ⌥Esc cancels. An empty name takes it off.
 private struct TitleField: View {
     let item: ClipItem
     let store: ClipStore
@@ -379,7 +396,7 @@ private struct TitleField: View {
             .focused($focused)
             .onAppear { DispatchQueue.main.async { focused = true } }
             .onSubmit { finish(save: true) }
-            .onExitCommand { finish(save: false) }
+            .onExitCommand { finish(save: !NSEvent.modifierFlags.contains(.option)) }
             .onChange(of: focused) { _, isFocused in if !isFocused { finish(save: true) } }
             .onDisappear { finish(save: true) }
     }
@@ -620,4 +637,17 @@ enum PinboardDrag {
     static func receive(_ providers: [NSItemProvider], _ handle: @escaping (UUID) -> Void) -> Bool {
         ClipDrag.receiveID(providers, of: type, handle)
     }
+}
+
+/// Redraws its content when `object` changes, and nothing around it.
+private struct Watching<Object: ObservableObject, Content: View>: View {
+    @ObservedObject var object: Object
+    @ViewBuilder let content: (Object) -> Content
+
+    init(_ object: Object, @ViewBuilder content: @escaping (Object) -> Content) {
+        self.object = object
+        self.content = content
+    }
+
+    var body: some View { content(object) }
 }

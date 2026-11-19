@@ -35,10 +35,10 @@ final class PreviewPopupController {
     private let store: ClipStore
     static let arrowHeight: CGFloat = 10
 
-    init(state: ShelfState, store: ClipStore) {
+    init(state: ShelfState, store: ClipStore, settings: AppSettings) {
         self.store = store
         panel.contentView = HostingView(rootView: PreviewPopup(state: state, selection: state.selectionModel,
-                                                                 store: store, geometry: geometry))
+                                                                 store: store, settings: settings, geometry: geometry))
     }
 
     var isKey: Bool { panel.isKeyWindow }
@@ -141,6 +141,7 @@ struct PreviewPopup: View {
     @ObservedObject var state: ShelfState
     @ObservedObject var selection: SelectionModel
     @ObservedObject var store: ClipStore
+    let settings: AppSettings
     @ObservedObject var geometry: PopupGeometry
 
     var body: some View {
@@ -149,7 +150,7 @@ struct PreviewPopup: View {
             Group {
                 // Built only while shown: a hidden popup would otherwise rebuild on every move.
                 if state.previewing, let item = state.selectedItem {
-                    PreviewCard(item: item, state: state, store: store)
+                    PreviewCard(item: item, state: state, store: store, settings: settings)
                         .id(item.id)
                 } else {
                     Color.clear
@@ -157,9 +158,7 @@ struct PreviewPopup: View {
             }
             .background(GlassBackground(cornerRadius: 22))
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.05)],
-                                             startPoint: .top, endPoint: .bottom), lineWidth: 1))
+            .glassEdge(cornerRadius: 22)
             if geometry.pointsDown { arrow }
         }
     }
@@ -191,6 +190,8 @@ private struct PreviewCard: View {
     let item: ClipItem
     @ObservedObject var state: ShelfState
     let store: ClipStore
+    let settings: AppSettings
+    @StateObject private var hovering = ViewState(false)
 
     private enum Field { case title, body }
     @FocusState private var focus: Field?
@@ -218,6 +219,7 @@ private struct PreviewCard: View {
                 .animation(.easeOut(duration: 0.15), value: state.editing)
             footer
         }
+        .onHover { hovering.value = $0 }
         .onAppear {
             titleDraft.value = item.title ?? ""
             textDraft.value = item.text ?? ""
@@ -279,35 +281,44 @@ private struct PreviewCard: View {
             nameLabel
             Spacer(minLength: 8)
             if state.editing {
-                PopupButton(title: "Cancel", key: "esc") { state.editing = false }
-                PopupButton(title: "Save", key: "⌘S", prominent: true) {
+                CapsuleButton(title: "Discard", key: "⌥esc", help: "Discard the changes (⌥Esc)") { state.editing = false }
+                CapsuleButton(title: "Save", key: "esc", prominent: true, help: "Save and finish editing (Esc or ⌘S)") {
                     saveText()
                     state.editing = false
                 }
                 .keyboardShortcut("s", modifiers: .command)
             } else {
-                PopupButton(title: "Copy", symbol: "doc.on.doc", key: "⌘C") { store.copyToPasteboard(item) }
+                // Actions used now and then show their symbol and key; the name is in the tooltip.
+                CapsuleButton(symbol: "doc.on.doc", key: "⌘C", help: "Copy (⌘C)") { state.onCopy(item) }
+                if item.isTextual || item.isImage {
+                    CapsuleButton(symbol: "character.bubble", key: settings.translateHotKey?.display,
+                                  help: "Translate" + (settings.translateHotKey.map { " (\($0.display))" } ?? "")) {
+                        state.onTranslate(item, nil)
+                    }
+                }
+                CapsuleButton(symbol: item.pinned ? "pin.slash" : "pin", key: "⌘P",
+                              help: item.pinned ? "Unpin (⌘P)" : "Pin, so it's kept (⌘P)") { store.togglePin(item) }
                 if item.kind == .link, let url = URL(string: item.text ?? "") {
-                    PopupButton(title: "Open", symbol: "safari") { NSWorkspace.shared.open(url) }
-                        .help("Open in Browser")
+                    CapsuleButton(symbol: "safari", help: "Open in Browser") { NSWorkspace.shared.open(url) }
                 }
                 if item.kind == .file, let path = item.filePaths?.first {
-                    PopupButton(title: "Finder", symbol: "folder") {
+                    CapsuleButton(symbol: "folder", help: "Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                     }
-                    .help("Show in Finder")
                 }
                 if item.isImage {
-                    PopupButton(title: "Float", symbol: "pin") { state.onFloatImages([item]) }
-                        .help("Float on screen")
+                    CapsuleButton(symbol: "pip", key: settings.floatImageKey?.display,
+                                  help: "Float on screen" + (settings.floatImageKey.map { " (\($0.display))" } ?? "")) {
+                        state.onFloatImages([item])
+                    }
                 }
                 if item.isTextual || item.isImage {
-                    PopupButton(title: "Edit", symbol: "pencil", key: "⌘E") {
+                    CapsuleButton(title: "Edit", symbol: "pencil", key: "⌘E",
+                                  help: item.isImage ? "Mark up the image (⌘E)" : "Edit the text (⌘E)") {
                         if item.isImage { state.onEditImage(item) } else { state.editing = true }
                     }
-                    .help(item.isImage ? "Mark up the image" : "Edit the text")
                 }
-                PopupButton(title: "Paste", key: "↩", prominent: true) { state.onPaste(item, false) }
+                CapsuleButton(title: "Paste", key: "↩", prominent: true) { state.onPaste(item, false) }
             }
             Button { state.closePreview() } label: {
                 Image(systemName: "xmark")
@@ -382,7 +393,6 @@ private struct PreviewCard: View {
                     richDraft.text = edited
                     textDraft.value = edited.string
                 }
-                .background(Color(nsColor: .textBackgroundColor))
             } else {
                 plainEditor
             }
@@ -404,12 +414,16 @@ private struct PreviewCard: View {
         case .link:
             linkContent
         case .image:
-            if let image = store.image(for: item) { picture(image) }
+            if let path = store.imageURL(for: item)?.path,
+               let image = FileThumbnails.image(at: path, maxPixels: Self.maxPicturePixels) ?? store.image(for: item) {
+                picture(image, backdrop: FileThumbnails.image(at: path, maxPixels: Self.backdropPixels))
+            }
         case .file:
             if let path = item.filePaths?.first {
                 // Image files are drawn like copied images, sized to the popup with no extra margins.
-                if FileThumbnails.pixelSize(of: path) != nil, let image = Self.fileImage(at: path) {
-                    picture(image)
+                if FileThumbnails.pixelSize(of: path) != nil,
+                   let image = FileThumbnails.image(at: path, maxPixels: Self.maxPicturePixels) ?? Self.fileImage(at: path) {
+                    picture(image, backdrop: FileThumbnails.image(at: path, maxPixels: Self.backdropPixels))
                 } else {
                     QuickLookView(url: URL(fileURLWithPath: path))
                 }
@@ -424,17 +438,23 @@ private struct PreviewCard: View {
             .font(.system(size: 13))
             .lineSpacing(2)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.never)
             .padding(12)
             .focused($focus, equals: .body)
     }
 
+    /// Enough for the largest popup on a Retina screen; pictures are decoded no larger.
+    private static let maxPicturePixels = 2000
+    /// The blurred copy behind a picture needs very few pixels.
+    private static let backdropPixels = 160
+
     /// The whole picture over a blurred copy of itself, as on its card.
-    private func picture(_ image: NSImage) -> some View {
+    private func picture(_ image: NSImage, backdrop: NSImage? = nil) -> some View {
         Image(nsImage: image).resizable().interpolation(.high).scaledToFit().padding(10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // A background, so the blurred copy spilling over doesn't make the popup any bigger.
             .background {
-                Image(nsImage: image).resizable().scaledToFill().blur(radius: 30).saturation(1.3).opacity(0.85)
+                Image(nsImage: backdrop ?? image).resizable().scaledToFill().blur(radius: 30).saturation(1.3).opacity(0.85)
                     .allowsHitTesting(false)
             }
             .clipped()
@@ -522,7 +542,7 @@ private struct PreviewCard: View {
     /// redraws often, so doing it in `body` made moving between clips stutter.
     static func richText(of item: ClipItem, store: ClipStore) -> NSAttributedString? {
         guard let file = item.pasteboardFile ?? item.richFile else { return nil }
-        // A clip synced from another Mac rewrites its file under the same name, so key on the text too.
+        // An edited clip may keep its file name, so key on the text too.
         let key = "\(file)|\(item.contentKey.hashValue)" as NSString
         if let cached = richCache.object(forKey: key) { return cached }
         guard let formatted = store.formattedText(for: item) else { return nil }
@@ -570,12 +590,14 @@ private struct PreviewCard: View {
                 .buttonStyle(.link)
             }
             if let app = item.sourceName { Text("From \(app)").fontWeight(.medium) }
-            Text(item.date.formatted(date: .abbreviated, time: .shortened))
         }
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 16)
         .frame(height: 30)
+        // Small print, shown while the pointer is over the popup (or while editing, for the counts).
+        .opacity(hovering.value || state.editing ? 1 : 0)
+        .animation(.easeOut(duration: 0.15), value: hovering.value)
     }
 
     private var details: [String] {
@@ -606,8 +628,7 @@ struct RichTextView: NSViewRepresentable {
     let text: NSAttributedString
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let view = scroll.documentView as! NSTextView
+        let (scroll, view) = OverlayScrollView.withTextView()
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
@@ -641,8 +662,7 @@ struct RichTextEditor: NSViewRepresentable {
     let onChange: (NSAttributedString) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let view = scroll.documentView as! NSTextView
+        let (scroll, view) = OverlayScrollView.withTextView()
         view.isEditable = true
         view.isRichText = true
         view.allowsUndo = true
@@ -702,40 +722,3 @@ struct QuickLookView: NSViewRepresentable {
 }
 
 /// A button in the popup's header: glass, with its key; the main action filled with the accent.
-private struct PopupButton: View {
-    let title: String
-    var symbol: String?
-    var key: String?
-    var prominent = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if let symbol { Image(systemName: symbol).font(.system(size: 11, weight: .medium)) }
-                Text(title).font(.system(size: 12, weight: prominent ? .semibold : .medium))
-                if let key {
-                    Text(key)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .opacity(0.55)
-                }
-            }
-            .foregroundStyle(prominent ? Color.white : Color.primary)
-            .padding(.horizontal, 11)
-            .frame(height: 28)
-            .contentShape(Capsule())
-            .background { if prominent { Capsule().fill(Color.accentColor) } }
-            .modifier(GlassUnlessFilled(filled: prominent))
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-    }
-}
-
-private struct GlassUnlessFilled: ViewModifier {
-    let filled: Bool
-
-    func body(content: Content) -> some View {
-        if filled { content } else { content.glassCapsule() }
-    }
-}

@@ -159,27 +159,9 @@ final class ImageEditorController: NSObject, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.window, self.window.attachedSheet == nil else { return event }
             // Typing in a text mark: its field handles Return and Esc itself.
-            if self.window.firstResponder is NSTextView { return self.performEditCommand(event) ? nil : event }
+            if self.window.firstResponder is NSTextView { return EditCommands.perform(event) ? nil : event }
             return self.handle(event) ? nil : event
         }
-    }
-
-    /// ⌘X, ⌘C, ⌘V, ⌘A and ⌘Z in a text mark. PasteClip stays in the background while the editor
-    /// is open, so the Edit menu's key equivalents don't reach the field.
-    private func performEditCommand(_ event: NSEvent) -> Bool {
-        let f = event.modifierFlags.intersection([.command, .option, .control, .shift])
-        guard f == .command || f == [.command, .shift], let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
-        let action: Selector
-        switch (key, f.contains(.shift)) {
-        case ("z", false): action = Selector(("undo:"))
-        case ("z", true): action = Selector(("redo:"))
-        case ("x", false): action = #selector(NSText.cut(_:))
-        case ("c", false): action = #selector(NSText.copy(_:))
-        case ("v", false): action = #selector(NSText.paste(_:))
-        case ("a", false): action = #selector(NSText.selectAll(_:))
-        default: return false
-        }
-        return NSApp.sendAction(action, to: nil, from: nil)
     }
 
     private func handle(_ event: NSEvent) -> Bool {
@@ -498,7 +480,8 @@ final class MarkupCanvasView: NSView, NSTextFieldDelegate {
         wantsLayer = true
         imageHost.wantsLayer = true
         imageHost.layer?.masksToBounds = true
-        imageHost.layer?.backgroundColor = NSColor.white.cgColor
+        // Checks behind the picture, so its transparent parts show as such.
+        imageHost.layer?.backgroundColor = NSColor(patternImage: Checkerboard.opaqueTile).cgColor
         imageHost.layer?.cornerRadius = 8
         imageHost.layer?.cornerCurve = .continuous
         shadowLayer.shadowColor = NSColor.black.cgColor
@@ -1090,10 +1073,10 @@ struct ImageEditorView: View {
             Spacer()
 
             HStack(spacing: 4) {
-                BarButton(title: "Discard", keys: "⌥Esc") { finish(.discard) }
-                BarButton(title: "Copy", keys: "⌘C") { finish(.copy) }
-                BarButton(title: "Float", keys: settings.floatImageKey?.display) { finish(.float) }
-                BarButton(title: "Done", keys: "↩", prominent: true) { finish(.save) }
+                CapsuleButton(title: "Discard", key: "⌥esc") { finish(.discard) }
+                CapsuleButton(title: "Copy", key: "⌘C") { finish(.copy) }
+                CapsuleButton(title: "Float", key: settings.floatImageKey?.display) { finish(.float) }
+                CapsuleButton(title: "Done", key: "↩", prominent: true) { finish(.save) }
             }
             .padding(4)
             .glassCapsule()
@@ -1164,49 +1147,3 @@ private struct IconButton: View {
     }
 }
 
-/// A text button with its shortcut beside the title.
-struct BarButton: View {
-    let title: String
-    var keys: String?
-    var prominent = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Text(title).font(.system(size: 12, weight: prominent ? .semibold : .medium))
-                if let keys {
-                    Text(keys)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .opacity(0.55)
-                }
-            }
-            .fixedSize()
-            .padding(.horizontal, 11)
-            .frame(height: 28)
-            .foregroundStyle(prominent ? Color.white : Color.primary)
-            .background(Capsule().fill(prominent ? Color.accentColor : Color.primary.opacity(0.06)))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-    }
-}
-
-/// A shortcut shown small next to what it does.
-struct KeyHint: View {
-    let keys: String
-    var onAccent = false
-
-    var body: some View {
-        Text(keys)
-            .font(.system(size: 10, weight: .medium, design: .rounded))
-            .lineLimit(1)
-            .fixedSize()
-            .foregroundStyle(onAccent ? Color.white.opacity(0.8) : Color.secondary)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(onAccent ? Color.white.opacity(0.4) : Color.secondary.opacity(0.35), lineWidth: 0.5))
-    }
-}

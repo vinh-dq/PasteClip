@@ -68,6 +68,12 @@ final class ScreenTextCapture {
         let dpi = properties?[kCGImagePropertyDPIWidth] as? Double ?? 144
         let languages = settings.textLanguages
         let keepLineBreaks = settings.keepLineBreaks
+        // Reading is usually quick; when it isn't, say that it's happening.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.running else { return }
+            self.toast.sharingType = self.settings.hideDuringScreenSharing ? .none : .readOnly
+            self.toast.show("Reading text…", symbol: "text.viewfinder", stays: true)
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let text = TextRecognizer.recognize(dpi < 100 ? TextRecognizer.upscaled(image, by: 2) : image,
                                                 languages: languages, keepLineBreaks: keepLineBreaks)
@@ -249,7 +255,8 @@ final class Toast {
     private var hideWork: DispatchWorkItem?
     var sharingType = NSWindow.SharingType.readOnly
 
-    func show(_ message: String, symbol: String, preview: String? = nil) {
+    /// `stays` keeps it up until the next message, for work still going on.
+    func show(_ message: String, symbol: String, preview: String? = nil, stays: Bool = false) {
         let excerpt = preview.map(Self.excerpt)
         let view = NSHostingView(rootView: ToastView(message: message, symbol: symbol, preview: excerpt,
                                                      previewWidth: excerpt.map(Self.width) ?? 0))
@@ -264,6 +271,7 @@ final class Toast {
         panel.orderFrontRegardless()
 
         hideWork?.cancel()
+        guard !stays else { return }
         let work = DispatchWorkItem { [panel] in
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.3

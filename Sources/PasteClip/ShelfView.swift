@@ -73,9 +73,20 @@ final class SelectionModel: ObservableObject {
 final class HeldKeys: ObservableObject {
     /// The quick-paste modifier (⌘ by default): the cards show their numbers.
     @Published var quickPaste = false
+    /// Held a moment longer: the shelf's keys show too. Not at once, so a quick ⌘C doesn't flash them.
+    @Published var showsKeys = false
+    private var showWork: DispatchWorkItem?
 
     func update(_ held: Bool) {
         if quickPaste != held { quickPaste = held }
+        showWork?.cancel()
+        guard held else {
+            if showsKeys { showsKeys = false }
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in self?.showsKeys = true }
+        showWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 }
 
@@ -131,6 +142,8 @@ final class ShelfState: ObservableObject {
     let selectionModel = SelectionModel()
     let store: ClipStore
     var onPaste: (ClipItem, Bool) -> Void = { _, _ in }
+    /// Copies a clip and closes the shelf, as ⌘C does.
+    var onCopy: (ClipItem) -> Void = { _ in }
     /// Pastes several clips together.
     var onPasteMany: ([ClipItem], Bool) -> Void = { _, _ in }
     /// Translates a clip, into the given language or the first one it isn't in.
@@ -276,6 +289,8 @@ struct ShelfView: View {
     @FocusState private var searchFocused: Bool
     @StateObject private var newBoardShown = ViewState(false)
     @StateObject private var editingBoard = ViewState<Pinboard?>(nil)
+    /// The pinboard asked to be deleted, waiting for its confirmation.
+    @StateObject private var deletingBoard = ViewState<Pinboard?>(nil)
     /// Tab a card is being dragged over: "history" or a pinboard id.
     @StateObject private var dropTarget = ViewState<String?>(nil)
 
@@ -296,9 +311,7 @@ struct ShelfView: View {
         .padding(.bottom, 14)
         .background(GlassBackground(cornerRadius: 26).ignoresSafeArea())
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-            .strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.05)],
-                                         startPoint: .top, endPoint: .bottom), lineWidth: 1))
+        .glassEdge(cornerRadius: 26)
         .onChange(of: state.focusToken) { searchFocused = true }
         .onChange(of: state.query) { state.selection = 0 }
         .onAppear { searchFocused = true }
@@ -344,9 +357,10 @@ struct ShelfView: View {
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
-        .frame(width: searchFocused || !state.query.text.isEmpty || state.query.hasFilters ? 280 : 220, height: 32)
+        // Wider only once there's something to show, not on focus, so the tabs beside it stay put.
+        .frame(width: !state.query.text.isEmpty || state.query.hasFilters ? 280 : 220, height: 32)
         .glassCapsule()
-        .animation(.easeOut(duration: 0.15), value: searchFocused)
+        .animation(.easeOut(duration: 0.15), value: state.query.text.isEmpty)
     }
 
     private var boardTabs: some View {
@@ -364,10 +378,7 @@ struct ShelfView: View {
                     .onDrag { PinboardDrag.provider(for: board) }
                     .contextMenu {
                         Button("Edit Pinboard…") { editingBoard.value = board }
-                        Button("Delete Pinboard", role: .destructive) {
-                            if state.query.pinboardID == board.id { state.select(board: nil) }
-                            store.deletePinboard(board)
-                        }
+                        Button("Delete Pinboard…", role: .destructive) { deletingBoard.value = board }
                     }
                     .popover(isPresented: Binding(get: { editingBoard.value?.id == board.id },
                                                   set: { if !$0 { editingBoard.value = nil } })) {
@@ -379,9 +390,36 @@ struct ShelfView: View {
                             editingBoard.value = nil
                         }
                     }
+                    .popover(isPresented: Binding(get: { deletingBoard.value?.id == board.id },
+                                                  set: { if !$0 { deletingBoard.value = nil } })) {
+                        deleteConfirmation(board)
+                    }
                 }
             }
         }
+    }
+
+    /// Asks before a pinboard goes: its name, colour and order of clips are lost, its clips stay.
+    private func deleteConfirmation(_ board: Pinboard) -> some View {
+        let count = store.items.filter { $0.pinboardID == board.id }.count
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Delete “\(board.name)”?").font(.system(size: 13, weight: .semibold))
+            Text(count == 0 ? "It has no clips." : "Its \(count) clip\(count == 1 ? "" : "s") stay in History.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Spacer()
+                CapsuleButton(title: "Cancel", key: "esc") { deletingBoard.value = nil }
+                    .keyboardShortcut(.cancelAction)
+                CapsuleButton(title: "Delete", prominent: true) {
+                    deletingBoard.value = nil
+                    if state.query.pinboardID == board.id { state.select(board: nil) }
+                    store.deletePinboard(board)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
     }
 
     private var newBoardButton: some View {
@@ -415,7 +453,7 @@ struct ShelfView: View {
             if let icon { Image(systemName: icon) }
             if let color {
                 Circle().fill(color).frame(width: 10, height: 10)
-                    .overlay(Circle().stroke(.white.opacity(0.7), lineWidth: 1))
+                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
             }
             Text(title).lineLimit(1)
         }
@@ -560,7 +598,8 @@ private struct GlassUnless: ViewModifier {
     }
 }
 
-/// Writes a new text clip. It lands in the current pinboard when one is selected.
+/// Writes a new text clip. It lands in the current pinboard when one is selected. Looks like the
+/// preview while editing: the text on a soft sheet ringed in the accent colour, the name in a capsule.
 struct ComposeView: View {
     @ObservedObject var state: ShelfState
     let store: ClipStore
@@ -568,28 +607,39 @@ struct ComposeView: View {
     @StateObject private var title = ViewState("")
     @StateObject private var text = ViewState("")
 
+    private var isEmpty: Bool { text.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     var body: some View {
         HStack(spacing: 14) {
             TextEditor(text: $text.value)
                 .font(.system(size: 13))
+                .lineSpacing(2)
                 .scrollContentBackground(.hidden)
-                .padding(10)
+                .scrollIndicators(.never)
+                .padding(12)
                 .focused($focused)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .textBackgroundColor)))
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.72))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 2))
             VStack(alignment: .leading, spacing: 10) {
-                Text("New Text Item").font(.headline)
-                TextField("Title (optional)", text: $title.value)
-                    .textFieldStyle(.roundedBorder)
-                Text("Saved clips can be pasted like anything you copied.")
-                    .font(.caption).foregroundStyle(.secondary)
+                TextField("Name this clip", text: $title.value)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .frame(height: 28)
+                    .background(Capsule().fill(Color(nsColor: .windowBackgroundColor).opacity(0.7)))
+                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5))
+                Text(destination)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                HStack {
-                    Button("Cancel") { state.closePreview() }
+                HStack(spacing: 6) {
+                    CapsuleButton(title: "Discard", key: "⌥esc", help: "Discard (⌥Esc)") { state.closePreview() }
                     Spacer()
-                    Button("Save", action: save)
-                        .buttonStyle(.borderedProminent)
+                    CapsuleButton(title: "Save", key: "esc", prominent: true, help: "Save (Esc or ⌘S)", action: save)
                         .keyboardShortcut("s", modifiers: .command)
-                        .disabled(text.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(isEmpty)
                 }
             }
             .frame(width: 250)
@@ -597,10 +647,18 @@ struct ComposeView: View {
         .onAppear {
             focused = true
             state.textInputActive = true
+            state.commitEdit = save
         }
     }
 
+    private var destination: String {
+        if let id = state.query.pinboardID, let board = store.pinboard(withID: id) { return "Saved to \(board.name)." }
+        return "Saved to History, ready to paste like anything you copied."
+    }
+
+    /// Saves the clip, or just closes when nothing was written.
     private func save() {
+        guard !isEmpty else { return state.closePreview() }
         let t = title.value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let item = store.addText(text.value, title: t.isEmpty ? nil : t) else { return }
         if let id = state.query.pinboardID, let board = store.pinboard(withID: id) {

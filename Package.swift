@@ -16,16 +16,10 @@ let package = Package(
             path: "Sources/PasteClipSystem",
             linkerSettings: [.linkedFramework("Carbon")]
         ),
-        // iCloud sync through CKSyncEngine. Inactive unless the app is signed with CloudKit entitlements.
-        .target(
-            name: "PasteClipSync",
-            dependencies: ["PasteClipCore", "PasteClipSystem"],
-            path: "Sources/PasteClipSync"
-        ),
         // Menu bar app, the floating shelf, the paste stack and settings.
         .executableTarget(
             name: "PasteClip",
-            dependencies: ["PasteClipCore", "PasteClipSystem", "PasteClipSync"],
+            dependencies: ["PasteClipCore", "PasteClipSystem"],
             path: "Sources/PasteClip"
         ),
         .testTarget(

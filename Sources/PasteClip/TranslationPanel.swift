@@ -334,20 +334,42 @@ final class TranslationController {
     private func handle(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let key = event.charactersIgnoringModifiers?.lowercased()
-        if flags.isEmpty, let n = Self.digitKeys.firstIndex(of: event.keyCode) {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        // 1…9 pick a language, or ⌘1…9 while the text is being edited.
+        if let n = Self.digitKeys.firstIndex(of: event.keyCode), flags == .command || (flags.isEmpty && !model.editing) {
             if settings.translationTargets.indices.contains(n) { model.choose(settings.translationTargets[n]) }
             return true
         }
+        if model.editing {
+            if event.keyCode == 53 { model.editing = false; return true }       // Esc: done editing
+            if isReturn, flags == .command { paste(); return true }
+            if EditCommands.perform(event) { return true }
+            guard flags == .command else { return false }                     // Everything else is typing.
+            switch key {
+            case "s": save(); return true
+            case "w": hide(); return true
+            default: return false
+            }
+        }
         switch event.keyCode {
-        case 53: hide(); return true                                   // Esc
-        case 123 where flags.isEmpty: model.cycle(-1); return true     // ←
-        case 124 where flags.isEmpty: model.cycle(1); return true      // →
-        case 126 where flags.isEmpty: model.cycleService(-1); return true // ↑
-        case 125 where flags.isEmpty: model.cycleService(1); return true  // ↓
-        case 36, 76:                                                   // Return
+        case 53: hide(); return true                                          // Esc
+        case 48 where flags.isEmpty: model.editing = true; return true        // Tab
+        case 123 where flags.isEmpty: model.cycle(-1); return true            // ←
+        case 124 where flags.isEmpty: model.cycle(1); return true             // →
+        case 126 where flags.isEmpty: model.cycleService(-1); return true     // ↑
+        case 125 where flags.isEmpty: model.cycleService(1); return true      // ↓
+        default: break
+        }
+        if isReturn {
             if flags.contains(.command) { paste() } else { copy(); hide() }
             return true
-        default: break
+        }
+        if flags.isEmpty {
+            switch key {
+            case "e": model.editing = true; return true
+            case "r": model.reverse(); return true
+            default: return false
+            }
         }
         guard flags == .command else { return false }
         switch key {
@@ -390,6 +412,8 @@ private final class TranslationPanel: NSPanel {
 
 final class TranslationModel: ObservableObject {
     enum Phase: Equatable {
+        /// Nothing to translate: the text was cleared while editing.
+        case idle
         case working
         case done(TranslationResult)
         /// What went wrong, and whether trying again could help (a network error) or not (a missing key).
@@ -399,6 +423,14 @@ final class TranslationModel: ObservableObject {
     }
 
     @Published private(set) var text = ""
+    /// The text as it came, before any editing.
+    @Published private(set) var original = ""
+    /// The text is being edited in the panel; keys go to it rather than to the panel.
+    @Published var editing = false
+    /// Edited, and not translated yet: typing goes on, or the pause before translating.
+    @Published private(set) var pending = false
+    /// The last translation, shown faded while the next one comes.
+    @Published private(set) var previous: String?
     @Published private(set) var target = Translator.defaultTargets[0]
     /// The language the text is in, once known.
     @Published private(set) var source: String?
@@ -427,6 +459,7 @@ final class TranslationModel: ObservableObject {
     /// Counts runs, so a late answer for an earlier text or language is dropped.
     private var generation = 0
     private var cache: [String: TranslationResult] = [:]
+    private var editWork: DispatchWorkItem?
 
     init(settings: AppSettings, keys: APIKeys) {
         self.settings = settings
@@ -440,9 +473,16 @@ final class TranslationModel: ObservableObject {
         return nil
     }
 
+    var edited: Bool { text != original }
+
     func start(_ text: String, target: String? = nil) {
         shortened = text.count > Translator.maxLength
         self.text = String(text.prefix(Translator.maxLength))
+        original = self.text
+        editing = false
+        pending = false
+        previous = nil
+        editWork?.cancel()
         showsOriginal = settings.translationShowsOriginal
         source = Translator.detectLanguage(self.text)
         picked = target != nil
@@ -454,8 +494,61 @@ final class TranslationModel: ObservableObject {
     func wait() {
         stop()
         text = ""
+        original = ""
+        editing = false
+        pending = false
+        previous = nil
         source = nil
         phase = .working
+    }
+
+    /// The text as edited in the panel. It's translated once typing pauses, not on every key.
+    func edit(_ newText: String) {
+        guard newText != text else { return }
+        shortened = newText.count > Translator.maxLength
+        text = String(newText.prefix(Translator.maxLength))
+        pending = true
+        editWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.textChanged() }
+        editWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Back to the text as it came.
+    func revert() {
+        editWork?.cancel()
+        text = original
+        shortened = false
+        textChanged()
+    }
+
+    /// Translates the translation back: it becomes the text, going into the language the text was in.
+    func reverse() {
+        guard let translation else { return NSSound.beep() }
+        let from = source
+        editWork?.cancel()
+        text = translation
+        original = translation
+        shortened = false
+        pending = false
+        previous = nil
+        source = Translator.detectLanguage(translation) ?? target
+        picked = true
+        let back = from.flatMap { from in settings.translationTargets.first { Translator.base(of: $0) == Translator.base(of: from) } }
+        target = back ?? Translator.target(for: source, priority: settings.translationTargets)
+        run()
+    }
+
+    private func textChanged() {
+        pending = false
+        source = Translator.detectLanguage(text)
+        if !picked { target = Translator.target(for: source, priority: settings.translationTargets) }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            stop()
+            previous = nil
+            return phase = .idle
+        }
+        run()
     }
 
     func choose(_ target: String) {
@@ -499,6 +592,7 @@ final class TranslationModel: ObservableObject {
     }
 
     func stop() {
+        editWork?.cancel()
         downloadWatch?.cancel()
         task?.cancel()
         generation += 1
@@ -508,6 +602,7 @@ final class TranslationModel: ObservableObject {
     private var cacheKey: String { "\(service.rawValue)|\(target)|\(text)" }
 
     private func run() {
+        if let translation { previous = translation }
         downloadWatch?.cancel()
         task?.cancel()
         generation += 1
@@ -746,11 +841,14 @@ private struct AppleLanguageDownload: View {
 struct TranslationView: View {
     static let width: CGFloat = 552
     static let cornerRadius: CGFloat = 16
-    /// The tallest the translation and the original get; longer text scrolls inside them.
+    /// The tallest the translation and the text get; longer text scrolls inside them.
     static let maxTranslationHeight: CGFloat = 240
     static let maxOriginalHeight: CGFloat = 130
     /// The tallest the panel gets.
-    static let maxHeight: CGFloat = 520
+    static let maxHeight: CGFloat = 540
+    private static let padding: CGFloat = 14
+    /// Room at the right of the text for its key hint.
+    private static let hintColumn: CGFloat = 26
 
     @ObservedObject var model: TranslationModel
     @ObservedObject var settings: AppSettings
@@ -760,25 +858,16 @@ struct TranslationView: View {
     var onSave: () -> Void = {}
     var onShowOnImage: () -> Void = {}
     var onDownload: (String, String) -> Void = { _, _ in }
+    @StateObject private var hoveringText = ViewState(false)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             languages
+            if model.editing || (model.showsOriginal && !model.original.isEmpty) { source }
             content
-            if model.showsOriginal, !model.text.isEmpty {
-                Divider()
-                Self.fitting(maxHeight: Self.maxOriginalHeight) {
-                    Text(model.text)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
             footer
         }
-        .padding(14)
+        .padding(Self.padding)
         .frame(width: Self.width)
         // Empty space anywhere in the panel moves it, and the grip at the top shows that it can be moved.
         .overlay(alignment: .top) {
@@ -796,39 +885,126 @@ struct TranslationView: View {
         }
     }
 
-    /// The target languages, numbered for the keys that pick them.
+    // MARK: Languages
+
+    /// The text's language, the reverse button, and the target languages numbered for their keys.
     private var languages: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(Array(settings.translationTargets.enumerated()), id: \.element) { i, language in
-                    Button { model.choose(language) } label: {
-                        HStack(spacing: 5) {
-                            if i < 9 { Text("\(i + 1)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
-                            Text(Translator.name(of: language)).font(.system(size: 12, weight: .medium))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .contentShape(Capsule())
-                        .glassCapsule(selected: language == model.target)
+        HStack(spacing: 6) {
+            Text(sourceName)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: 120, alignment: .leading)
+                .fixedSize()
+                .help("The language of the text, as detected")
+            Button(action: model.reverse) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color.primary.opacity(0.06)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(model.translation == nil)
+            .help(model.editing ? "Translate the translation back" : "Translate the translation back (R)")
+            ScrollView(.horizontal) {
+                HStack(spacing: 5) {
+                    ForEach(Array(settings.translationTargets.enumerated()), id: \.element) { i, language in
+                        LanguageChip(code: Self.shortName(of: language),
+                                     key: i < 9 ? (model.editing ? "⌘\(i + 1)" : "\(i + 1)") : nil,
+                                     selected: language == model.target) { model.choose(language) }
+                            .help(Translator.name(of: language))
                     }
-                    .buttonStyle(.plain)
                 }
+            }
+            .scrollIndicators(.never)
+            if model.edited {
+                Button(action: model.revert) {
+                    Label("Revert", systemImage: "arrow.uturn.backward").font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .help("Back to the text as it came")
             }
         }
     }
 
+    private var sourceName: String {
+        if let source = model.source { return Translator.name(of: source) }
+        return model.text.isEmpty && !model.editing ? "" : "Auto-detect"
+    }
+
+    /// "VI", "EN", "JA", "ZH"; Traditional Chinese is "ZH-TW".
+    static func shortName(of language: String) -> String {
+        language == "zh-Hant" ? "ZH-TW" : Translator.base(of: language).uppercased()
+    }
+
+    // MARK: Text
+
+    /// The text being translated, quiet while it's read and edited in place after a click, E or Tab.
+    private var source: some View {
+        let width = Self.width - Self.padding * 2 - Self.hintColumn
+        let height = min(max(SourceEditor.height(of: model.text, width: width), 30), Self.maxOriginalHeight)
+        return SourceEditor(text: model.text, editing: model.editing,
+                            onChange: { model.edit($0) }, onBegin: { model.editing = true })
+            .frame(height: height)
+            .overlay(alignment: .topLeading) {
+                if model.text.isEmpty {
+                    Text("Type to translate")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.tertiary)
+                        .padding(EdgeInsets(top: SourceEditor.inset.height, leading: SourceEditor.inset.width, bottom: 0, trailing: 0))
+                        .allowsHitTesting(false)
+                }
+            }
+            .padding(.trailing, Self.hintColumn)
+            .overlay(alignment: .topTrailing) {
+                KeyHint(keys: model.editing ? "esc" : "E")
+                    .padding(.top, 7)
+                    .padding(.trailing, 6)
+                    .opacity(model.editing || hoveringText.value ? 1 : 0)
+                    .help(model.editing ? "Done editing (Esc)" : "Edit the text (E)")
+                    .allowsHitTesting(false)
+            }
+            // Brighter while editing, the sheet text is written on elsewhere in the app.
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(model.editing ? Color(nsColor: .textBackgroundColor).opacity(0.72)
+                      : Color.primary.opacity(hoveringText.value ? 0.07 : 0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(model.editing ? 0.85 : 0), lineWidth: 1.5))
+            .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hoveringText.value = inside } }
+            .animation(.easeOut(duration: 0.15), value: model.editing)
+    }
+
+    // MARK: Translation
+
     @ViewBuilder
     private var content: some View {
         switch model.phase {
+        case .idle:
+            Text("The translation appears here.")
+                .font(.system(size: 13))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
         case .working:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Translating…").foregroundStyle(.secondary)
+            if let previous = model.previous {
+                Self.fitting(maxHeight: Self.maxTranslationHeight) { translation(previous) }
+                    .opacity(0.45)
+                    .overlay(alignment: .topTrailing) { ProgressView().controlSize(.mini) }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Translating…").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         case .done(let result):
             VStack(alignment: .leading, spacing: 6) {
                 Self.fitting(maxHeight: Self.maxTranslationHeight) { translation(result.text) }
+                    .opacity(model.pending ? 0.45 : 1)
+                    .animation(.easeOut(duration: 0.12), value: model.pending)
                 if model.shortened {
                     Text("Only the first \(Translator.maxLength.formatted()) characters were translated.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -840,7 +1016,7 @@ struct TranslationView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 // Only where another go could turn out differently.
-                if retryable { Button("Try Again") { model.retry() } }
+                if retryable { CapsuleButton(title: "Try Again", action: model.retry) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         case .needsDownload(let source, let target):
@@ -849,11 +1025,11 @@ struct TranslationView: View {
                       + "Apple needs both languages downloaded.", systemImage: "arrow.down.circle")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Button(model.requestedDownload(from: source, to: target) ? "Download Progress…" : "Download…") {
+                HStack(spacing: 6) {
+                    CapsuleButton(title: model.requestedDownload(from: source, to: target) ? "Download Progress…" : "Download…") {
                         onDownload(source, target)
                     }
-                    Button("Use Google Translate") { model.use(.google) }
+                    CapsuleButton(title: "Use Google Translate") { model.use(.google) }
                 }
                 if model.requestedDownload(from: source, to: target) {
                     Text("The translation appears here as soon as the download is done.")
@@ -865,12 +1041,12 @@ struct TranslationView: View {
     }
 
     /// `content` at its own height when it fits in `maxHeight`, so short text gives a short panel;
-    /// past that, it stays `maxHeight` tall and scrolls.
+    /// past that, it stays `maxHeight` tall and scrolls, faded at the edges instead of a scroll bar.
     private static func fitting<Content: View>(maxHeight: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
         let content = content()
         return ViewThatFits(in: .vertical) {
             content
-            ScrollView { content }
+            FadingScroll { content }
         }
         .frame(maxHeight: maxHeight)
         .fixedSize(horizontal: false, vertical: true)
@@ -884,52 +1060,175 @@ struct TranslationView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    // MARK: Footer
+
     private var footer: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Menu {
                 ForEach(keys.available) { service in
                     Toggle(service.title, isOn: Binding(get: { model.service == service }, set: { if $0 { model.use(service) } }))
                 }
             } label: {
-                Text(sourceLine).lineLimit(1)
+                Text(model.service == .apple ? "Apple" : model.service.title).lineLimit(1)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .font(.system(size: 11))
+            .font(.system(size: 11.5))
             .foregroundStyle(.secondary)
             .help("Translation service (↑ ↓)")
             Spacer(minLength: 4)
             if model.fromImage {
-                Button(action: onShowOnImage) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "photo")
-                        Text("Show on Image")
-                        KeyHint(keys: "⌘I")
-                    }
-                }
-                .help("Float the image with the translation where its text is (⌘I)")
+                CapsuleButton(title: "Show on Image", symbol: "photo", key: "⌘I",
+                              help: "Float the image with the translation where its text is (⌘I)", action: onShowOnImage)
             }
-            Button { model.showsOriginal.toggle() } label: {
-                Image(systemName: model.showsOriginal ? "text.badge.minus" : "text.quote")
-            }
-            .help(model.showsOriginal ? "Hide original (⌘O)" : "Show original (⌘O)")
-            Button(action: onSave) { Image(systemName: model.saved ? "checkmark" : "tray.and.arrow.down") }
-                .help("Save to history (⌘S)")
             Group {
-                Button("Copy", action: onCopy).help("Copy (Return)")
-                Button("Paste", action: onPaste).help("Paste into the app (⌘Return)")
+                CapsuleButton(symbol: model.saved ? "checkmark" : "tray.and.arrow.down", help: "Save to history (⌘S)", action: onSave)
+                CapsuleButton(title: "Copy", key: model.editing ? nil : "↩", help: "Copy the translation (Return)", action: onCopy)
+                CapsuleButton(title: "Paste", key: "⌘↩", prominent: true, help: "Paste into the app (⌘Return)", action: onPaste)
             }
-            .buttonStyle(.bordered)
             .disabled(model.translation == nil)
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
+    }
+}
+
+/// A target language: its short name, with the key that picks it.
+private struct LanguageChip: View {
+    let code: String
+    let key: String?
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let key { Text(key).font(.system(size: 9.5, weight: .semibold, design: .rounded)).opacity(0.55) }
+                Text(code).font(.system(size: 11.5, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(Capsule().fill(selected ? Color.accentColor : Color.primary.opacity(0.06)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+}
+
+/// A scroll view without a scroll bar: its content fades out at an edge it can scroll towards.
+private struct FadingScroll<Content: View>: View {
+    @ViewBuilder let content: Content
+    /// Whether the top and the bottom fade: there's more to scroll to there.
+    @StateObject private var fades = ViewState([false, true])
+
+    var body: some View {
+        ScrollView { content }
+            .scrollIndicators(.never)
+            .onScrollGeometryChange(for: [Bool].self) { geometry in
+                let offset = geometry.contentOffset.y + geometry.contentInsets.top
+                return [offset > 1, offset + geometry.containerSize.height < geometry.contentSize.height - 1]
+            } action: { _, edges in
+                if fades.value != edges { fades.value = edges }
+            }
+            .mask(LinearGradient(stops: [
+                .init(color: fades.value[0] ? .clear : .black, location: 0),
+                .init(color: .black, location: 0.1),
+                .init(color: .black, location: 0.86),
+                .init(color: fades.value[1] ? .clear : .black, location: 1),
+            ], startPoint: .top, endPoint: .bottom))
+    }
+}
+
+/// The text being translated. Read only until a click (or E) starts editing it in place;
+/// no scroll bar, as the panel fits it up to `TranslationView.maxOriginalHeight`.
+private struct SourceEditor: NSViewRepresentable {
+    static let font = NSFont.systemFont(ofSize: 12.5)
+    static let inset = NSSize(width: 10, height: 7)
+    let text: String
+    let editing: Bool
+    let onChange: (String) -> Void
+    let onBegin: () -> Void
+
+    /// The height `text` takes laid out `width` wide, as the editor shows it.
+    static func height(of text: String, width: CGFloat) -> CGFloat {
+        // A trailing line break starts a line of its own, which measuring ignores.
+        let measured = text.isEmpty || text.hasSuffix("\n") ? text + " " : text
+        let rect = (measured as NSString).boundingRect(
+            with: NSSize(width: width - inset.width * 2, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
+        return ceil(rect.height) + inset.height * 2
     }
 
-    /// "English → Vietnamese · Google Translate".
-    private var sourceLine: String {
-        let from = model.source.map(Translator.name(of:)) ?? "Detected"
-        let service = model.service == .apple ? "Apple" : model.service.title
-        return "\(from) → \(Translator.name(of: model.target)) · \(service)"
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = OverlayScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.hasHorizontalScroller = false
+        let view = SourceTextView(frame: .zero)
+        view.font = Self.font
+        view.textContainerInset = Self.inset
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        view.drawsBackground = false
+        view.isRichText = false
+        view.allowsUndo = true
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.string = text
+        view.delegate = context.coordinator
+        scroll.documentView = view
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? SourceTextView else { return }
+        context.coordinator.onChange = onChange
+        view.onBegin = onBegin
+        // Text set from outside (revert, reverse); typing already matches, and a word still being
+        // composed by an input method isn't interrupted.
+        if view.string != text, !view.hasMarkedText() { view.string = text }
+        view.isEditable = editing
+        view.textColor = editing ? .labelColor : .secondaryLabelColor
+        view.insertionPointColor = .controlAccentColor
+        if editing, view.window?.firstResponder !== view {
+            // Started with a key rather than a click: the caret goes to the end.
+            DispatchQueue.main.async {
+                guard view.window?.makeFirstResponder(view) == true else { return }
+                view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+                view.scrollToEndOfDocument(nil)
+            }
+        } else if !editing, view.window?.firstResponder === view {
+            view.setSelectedRange(NSRange(location: 0, length: 0))
+            view.window?.makeFirstResponder(nil)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var onChange: (String) -> Void
+
+        init(onChange: @escaping (String) -> Void) { self.onChange = onChange }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            onChange(view.string)
+        }
+    }
+}
+
+/// Starts editing when clicked while read only; the click then places the caret.
+private final class SourceTextView: NSTextView {
+    var onBegin: () -> Void = {}
+
+    override func mouseDown(with event: NSEvent) {
+        if !isEditable { onBegin() }
+        super.mouseDown(with: event)
     }
 }
