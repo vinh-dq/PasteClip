@@ -55,6 +55,8 @@ public struct ClipItem: Identifiable, Codable, Equatable {
     public var pasteboardFile: String?
     /// Text found in an image by Vision.
     public var ocrText: String?
+    /// `TextRecognizer.version` when `ocrText` was read; text from an older reader is read again.
+    public var ocrVersion: Int?
     /// Where on screen (in points) a screenshot taken by PasteClip was, so it floats back over
     /// that spot.
     public var screenFrame: CGRect?

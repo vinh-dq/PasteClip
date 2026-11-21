@@ -19,6 +19,12 @@ final class GlowTone: ObservableObject {
     @Published var light = false
 }
 
+/// A window that stays where it's put: macOS would push one that reaches above the menu bar back
+/// down, and the halo of a window dragged to the top of the screen would slide off it.
+private final class HaloWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
 /// The halo outside a window, drawn by a window of its own just behind it: the window itself is
 /// only as large as its content, which would cut the halo off. It follows the window as it moves,
 /// resizes, fades and switches between light and dark, and never takes clicks.
@@ -33,7 +39,7 @@ final class GlowHalo {
     }
 
     /// Room around the window for the halo to fade out in.
-    private static let margin: CGFloat = 40
+    private static let margin: CGFloat = 56
 
     private weak var parent: NSWindow?
     private let kind: GlowKind
@@ -59,7 +65,7 @@ final class GlowHalo {
         self.kind = kind
         self.cornerRadius = cornerRadius
         self.tone = tone
-        window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        window = HaloWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -125,6 +131,7 @@ final class GlowHalo {
         // window, which reads as a dark border.
         let shade = NSColor(red: 0.08, green: 0.08, blue: 0.16, alpha: 1)
         let black = NSColor.black
+        let glow = (NSColor.controlAccentColor.blended(withFraction: 0.3, of: .white) ?? .controlAccentColor)
         switch (kind, isDark) {
         case (.panel, false): return [Glow(radius: 7.2, opacity: 0.6, offsetY: 5.4, inset: 5.4),
                                       Glow(radius: 0.9, opacity: 0.06, color: shade, offsetY: -0.9),
@@ -132,11 +139,18 @@ final class GlowHalo {
         case (.panel, true): return [Glow(radius: 9, opacity: 0.28, offsetY: 5.4, inset: 7.2),
                                      Glow(radius: 0.9, opacity: 0.3, color: black, offsetY: -0.9),
                                      Glow(radius: 22.5, opacity: 0.6, color: black, offsetY: -19.8, inset: 10.8)]
+        // A picture also glows in the accent, all round, so a white capture on a white page (or a
+        // light one on black) still has an edge: lightened so it shows on black too, and wide
+        // enough to read on white.
         case (.picture, false): return [Glow(radius: 6.3, opacity: 0.6, offsetY: 4.5, inset: 5.4),
                                         Glow(radius: 0.9, opacity: 0.08, color: shade, offsetY: -0.9),
+                                        Glow(radius: 11, opacity: 0.16, color: shade, inset: 1),
+                                        Glow(radius: 14, opacity: 0.5, color: glow, inset: 1),
                                         Glow(radius: 18, opacity: 0.25, color: shade, offsetY: -14.4, inset: 9)]
         case (.picture, true): return [Glow(radius: 8.1, opacity: 0.3, offsetY: 4.5, inset: 7.2),
                                        Glow(radius: 0.9, opacity: 0.35, color: black, offsetY: -0.9),
+                                       Glow(radius: 15, opacity: 0.7, color: glow, inset: 1),
+                                       Glow(radius: 7, opacity: 0.35, color: glow, inset: 1),
                                        Glow(radius: 20.7, opacity: 0.65, color: black, offsetY: -18, inset: 10.8)]
         }
     }

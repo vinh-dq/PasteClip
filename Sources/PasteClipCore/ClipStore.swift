@@ -266,6 +266,7 @@ public final class ClipStore: ObservableObject {
         TextRecognizer.recognize(imageAt: url, languages: recognitionLanguages) { [weak self] text in
             if let self, let text, let i = self.index(of: item.id) {
                 self.items[i].ocrText = text
+                self.items[i].ocrVersion = TextRecognizer.version
                 self.save()
             }
             completion(text)
@@ -277,6 +278,7 @@ public final class ClipStore: ObservableObject {
         TextRecognizer.recognize(imageAt: url, languages: recognitionLanguages) { [weak self] text in
             guard let self, let text, let i = self.index(of: item.id) else { return }
             self.items[i].ocrText = text
+                self.items[i].ocrVersion = TextRecognizer.version
             self.save()
         }
     }
@@ -671,6 +673,10 @@ public final class ClipStore: ObservableObject {
 
     private func load() {
         items = Self.read(ClipItem.self, from: historyURL).sorted { $0.date > $1.date }
+        // Text an older reader got wrong (mixed writings) is dropped, so it's read again on use.
+        for i in items.indices where items[i].ocrText != nil && items[i].ocrVersion != TextRecognizer.version {
+            items[i].ocrText = nil
+        }
         pinboards = Self.read(Pinboard.self, from: pinboardsURL)
     }
 
