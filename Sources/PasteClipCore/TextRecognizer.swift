@@ -10,6 +10,9 @@ import Vision
 /// Japanese, with Japanese first it drops Vietnamese accents. So each writing system gets its own
 /// pass, the passes run side by side, and each line is taken from the pass that reads its writing.
 public enum TextRecognizer {
+    /// Raised when reading improves, so text kept from an earlier version is read again.
+    public static let version = 2
+
     public static let defaultLanguages = ["en-US", "vi-VT", "ja-JP", "zh-Hans"]
 
     /// Languages Vision can read, in its own order.
@@ -113,9 +116,11 @@ public enum TextRecognizer {
             }
             let lines = (observations ?? []).compactMap { observation -> Line? in
                 guard let candidate = observation.topCandidates(1).first else { return nil }
-                return Line(text: candidate.string, box: observation.boundingBox, script: script,
-                            quad: [observation.topLeft, observation.topRight, observation.bottomRight, observation.bottomLeft],
-                            confidence: candidate.confidence)
+                var line = Line(text: candidate.string, box: observation.boundingBox, script: script,
+                                quad: [observation.topLeft, observation.topRight, observation.bottomRight, observation.bottomLeft],
+                                confidence: candidate.confidence, words: words(of: candidate, script: script))
+                if script == .latin { line.tidyLatin() }
+                return line
             }
             lock.withLock { passes[i] = lines }
         }
@@ -214,8 +219,121 @@ public enum TextRecognizer {
         /// How sure Vision is of the reading, 0–1.
         public var confidence: Float = 1
 
+        /// Where the line's pieces sit along it: words for Latin writing, runs of the pass's own
+        /// writing for the others. Lets a mixed line be put together piece by piece.
+        var words: [Word] = []
+
+        /// What the Latin model gets wrong in a way that can be told: a Cyrillic or Greek letter
+        /// standing in for a Latin one inside a word ("Мã"), and a pipe stuck to the word after it.
+        mutating func tidyLatin() {
+            text = Self.tidied(text)
+            for i in words.indices { words[i].text = Self.tidied(words[i].text) }
+        }
+
+        static func tidied(_ text: String) -> String {
+            var result = text
+            let foreign = result.filter { c in c.unicodeScalars.contains { Script.cyrillic.contains($0) || (0x0370...0x03FF).contains($0.value) } }
+            if !foreign.isEmpty {
+                if foreign.allSatisfy({ lookalikes[$0] != nil }) {
+                    // Every such letter has a Latin twin ("ТР.НСМ." for "TP.HCM."): it's Latin text.
+                    result = String(result.map { lookalikes[$0] ?? $0 })
+                } else {
+                    result = result.split(separator: " ", omittingEmptySubsequences: false).map { token in
+                        let token = String(token)
+                        guard token.unicodeScalars.contains(where: { Script.latin.contains($0) && $0.properties.isAlphabetic }) else { return token }
+                        return String(token.map { lookalikes[$0] ?? $0 })
+                    }.joined(separator: " ")
+                }
+            }
+            if result.contains("|") {
+                result = result.replacingOccurrences(of: "(^|\\s)\\|(?=[\\p{L}\\p{N}])", with: "$1| ", options: .regularExpression)
+            }
+            return result
+        }
+
+        private static let lookalikes: [Character: Character] = Dictionary(
+            zip("АВЕКМНОРСТХаеорсухіјѕΑΒΕΖΗΙΚΜΝΟΡΤΥΧαο", "ABEKMHOPCTXaeopcyxijsABEZHIKMNOPTYXao").map { ($0, $1) }, uniquingKeysWith: { first, _ in first })
+
         /// Chinese or Japanese, which is written without spaces between words.
         public var isHanOrKana: Bool { script == .hanAndKana }
+    }
+
+    struct Word: Equatable, Codable {
+        var text: String
+        var minX: CGFloat
+        var maxX: CGFloat
+        var midX: CGFloat { (minX + maxX) / 2 }
+    }
+
+    /// The pieces of `candidate` with their horizontal extent: space-separated words for Latin
+    /// writing, otherwise the runs of `script`'s own characters (a Japanese phrase in the middle
+    /// of a Vietnamese sentence), with the punctuation stuck to them: full-width marks, a bracket
+    /// opening or closing them, a letter or two between their characters ("会議室Aで").
+    private static func words(of candidate: VNRecognizedText, script: Script) -> [Word] {
+        let text = candidate.string
+        let ranges = script == .latin ? latinWords(in: text) : runs(of: script, in: text)
+        return ranges.compactMap { range in
+            guard let box = try? candidate.boundingBox(for: range)?.boundingBox else { return nil }
+            return Word(text: String(text[range]), minX: box.minX, maxX: box.maxX)
+        }
+    }
+
+    private static func latinWords(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var start: String.Index?
+        for i in text.indices {
+            if text[i].isWhitespace {
+                if let s = start { ranges.append(s..<i); start = nil }
+            } else if start == nil { start = i }
+        }
+        if let s = start { ranges.append(s..<text.endIndex) }
+        return ranges
+    }
+
+    private static func isFullWidthMark(_ scalar: Unicode.Scalar) -> Bool {
+        let v = scalar.value
+        return (0x3000...0x303F).contains(v) || (0xFF01...0xFF65).contains(v)
+    }
+
+    private static func isOpening(_ scalar: Unicode.Scalar) -> Bool {
+        [0xFF08, 0xFF3B, 0xFF5B, 0xFF5F, 0x3008, 0x300A, 0x300C, 0x300E, 0x3010, 0x3014, 0x201C, 0x2018].contains(scalar.value)
+    }
+
+    private static func isOpeningOrSeparator(_ scalar: Unicode.Scalar) -> Bool {
+        isOpening(scalar) || scalar.value == 0xFF5C || scalar.value == 0xFF0F
+    }
+
+    static func runs(of script: Script, in text: String) -> [Range<String.Index>] {
+        let chars = Array(text.indices)
+        func scalar(_ k: Int) -> Unicode.Scalar { text.unicodeScalars[chars[k]] }
+        func isOwn(_ k: Int) -> Bool { script.contains(scalar(k)) }
+        func isMark(_ k: Int) -> Bool { isFullWidthMark(scalar(k)) }
+        func isAlnum(_ k: Int) -> Bool { scalar(k).isASCII && (scalar(k).properties.isAlphabetic || (0x30...0x39).contains(scalar(k).value)) }
+        var ranges: [Range<String.Index>] = []
+        var k = 0
+        while k < chars.count {
+            guard isOwn(k) else { k += 1; continue }
+            var first = k, last = k
+            var cursor = k + 1
+            while cursor < chars.count {
+                if isOwn(cursor) || isMark(cursor) { last = cursor; cursor += 1; continue }
+                // One or two letters or digits with this writing straight after them.
+                var gap = cursor
+                while gap < chars.count, isAlnum(gap), gap - cursor < 2 { gap += 1 }
+                if gap > cursor, gap < chars.count, isOwn(gap) || isMark(gap) { last = gap; cursor = gap + 1; continue }
+                break
+            }
+            // Marks that open or separate stay with what follows, not with the run; an opening
+            // bracket straight before it, and closing marks straight after it, belong to it.
+            while last > k, !isOwn(last), isOpeningOrSeparator(scalar(last)) { last -= 1 }
+            while first > 0, isFullWidthMark(scalar(first - 1)) || "([{".unicodeScalars.contains(scalar(first - 1)),
+                  isOpening(scalar(first - 1)) || "([{".unicodeScalars.contains(scalar(first - 1)) { first -= 1 }
+            while last + 1 < chars.count, ")]}.,!?;:".unicodeScalars.contains(scalar(last + 1)) { last += 1 }
+            let end = last + 1 < chars.count ? chars[last + 1] : text.endIndex
+            ranges.append(chars[first]..<end)
+            k = last + 1
+        }
+        return ranges
     }
 
     /// The writing systems Vision reads with separate models.
@@ -275,8 +393,14 @@ public enum TextRecognizer {
                     continue
                 }
                 var merged = line
-                let latin = overlapping.filter { result[$0].script == .latin }.map { result[$0].text }
-                merged.text = restoringAccents(in: line.text, from: latin.joined(separator: " "))
+                let latinLines = overlapping.filter { result[$0].script == .latin }.map { result[$0] }
+                if let mixed = combining(latinLines, with: line) {
+                    merged.text = mixed.text
+                    merged.words = mixed.words
+                } else {
+                    merged.words = []
+                    merged.text = restoringAccents(in: line.text, from: latinLines.map(\.text).joined(separator: " "))
+                }
                 merged.box = overlapping.reduce(line.box) { $0.union(result[$1].box) }
                 // The corners stay this pass's own: which way the line runs (bottom up for a
                 // column of vertical writing) is what they tell.
@@ -285,6 +409,80 @@ public enum TextRecognizer {
             }
         }
         return result
+    }
+
+    /// A line mixing writing systems, put together: the Latin pass reads the Latin words (with their
+    /// accents) and garbles the Japanese between them, the other pass reads that Japanese but
+    /// strips accents. So the words the Latin pass read stay, except where they sit over a run the
+    /// other pass read; the runs take their place, in order along the line. nil when there is no
+    /// position to go by.
+    static func combining(_ latin: [Line], with other: Line) -> (text: String, words: [Word])? {
+        let runs = other.words
+        guard !runs.isEmpty, !latin.isEmpty, latin.allSatisfy({ !$0.words.isEmpty }) else { return nil }
+        let slack: CGFloat = 0.001
+        let all = latin.flatMap(\.words).sorted { $0.minX < $1.minX }
+        func covers(_ run: Word, _ word: Word) -> Bool { word.midX > run.minX - slack && word.midX < run.maxX + slack }
+        var pieces = all.filter { word in !runs.contains { covers($0, word) } }
+        for run in runs {
+            var run = run
+            let dropped = all.filter { covers(run, $0) }
+            // The Japanese pass writes brackets and slashes full-width beside Latin words.
+            var converted = ""
+            for c in run.text {
+                switch c {
+                case "（": converted += converted.isEmpty || converted.last == " " ? "(" : " ("
+                case "［": converted += converted.isEmpty || converted.last == " " ? "[" : " ["
+                case "）": converted += ")"
+                case "］": converted += "]"
+                case "｜": converted += "|"
+                case "／": converted += "/"
+                default: converted.append(c)
+                }
+            }
+            run.text = converted
+            // What the Latin pass read as part of the garbled stretch: a separator before the
+            // run, and a closing quote or full stop after it.
+            if let lead = dropped.first?.text.first, "-–—|/".contains(lead), !run.text.hasPrefix(String(lead)) {
+                pieces.append(Word(text: String(lead), minX: run.minX - slack, maxX: run.minX - slack))
+            }
+            if let last = dropped.last?.text {
+                let tail = String(last.reversed().prefix { ".,!?\"”".contains($0) }.reversed())
+                let own = String(run.text.reversed().prefix { ".,!?\"”！？。，：；".contains($0) }.reversed())
+                let ownHalf = own.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? own
+                if tail.count > ownHalf.count, tail.hasPrefix(ownHalf) { run.text += String(tail.dropFirst(ownHalf.count)) }
+            }
+            // A mark the run already ends with ("！") isn't repeated by the Latin pass's "!" after it.
+            if let end = run.text.last, "！？。、，：；".contains(end) {
+                let half = Character(String(end).applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? "")
+                for i in pieces.indices where pieces[i].minX >= run.minX && pieces[i].minX < run.maxX + 0.03 {
+                    pieces[i].text = String(pieces[i].text.drop { $0 == half })
+                }
+                pieces.removeAll { $0.text.isEmpty }
+            }
+            pieces.append(run)
+        }
+        // A closing quote, bracket or mark stands against the word before it.
+        let ordered = pieces.sorted { $0.midX < $1.midX }
+        var result = ""
+        for piece in ordered {
+            let closing = !piece.text.isEmpty && piece.text.allSatisfy { ")]}\"”'.,!?;:".contains($0) }
+            if !result.isEmpty, !closing { result += " " }
+            result += piece.text
+        }
+        return (result, ordered)
+    }
+
+    /// Lines top to bottom, left to right along a row.
+    static func readingRows(of lines: [Line]) -> [[Line]] {
+        var rows: [[Line]] = []
+        for line in lines.sorted(by: { $0.box.midY > $1.box.midY }) {
+            if let last = rows.last?.last, abs(last.box.midY - line.box.midY) < min(last.box.height, line.box.height) / 2 {
+                rows[rows.count - 1].append(line)
+            } else {
+                rows.append([line])
+            }
+        }
+        return rows.map { $0.sorted { $0.box.minX < $1.box.minX } }
     }
 
     /// Same row and touching: at least half of the shorter line's height overlaps.

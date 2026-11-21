@@ -652,8 +652,14 @@ final class TranslationModel: ObservableObject {
                 self.target = next
                 return run()
             }
-            return phase = .failed("The text is already in \(Translator.name(of: target)). Pick another language above.",
-                                   retryable: false)
+            // Already in this language: the text stays, with any pieces in other languages translated.
+            let text = text
+            task = Task { @MainActor [weak self] in
+                let mixed = await self?.translatingForeignRuns(in: text, to: target) ?? text
+                guard let self, generation == self.generation else { return }
+                self.phase = .done(TranslationResult(text: mixed, source: guess))
+            }
+            return
         }
         // The language found for the text, or else the likeliest ones, however unsure.
         let candidates = (source.map { [$0] } ?? likely)
@@ -688,6 +694,24 @@ final class TranslationModel: ObservableObject {
             self.appleConfiguration = TranslationSession.Configuration(source: Locale.Language(identifier: source),
                                                                        target: Locale.Language(identifier: target))
         }
+    }
+
+    /// `text` with the pieces that aren't in `target` (a Japanese phrase in a Vietnamese sentence,
+    /// English words) translated into it, through Apple's installed languages; what can't be is kept.
+    private func translatingForeignRuns(in text: String, to target: String) async -> String {
+        guard #available(macOS 26.0, *) else { return text }
+        let checker = NSSpellChecker.shared
+        let runs = MixedText.foreignRuns(in: text, target: target) { word in
+            checker.checkSpelling(of: word, startingAt: 0, language: "en", wrap: false,
+                                  inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+        }
+        var translations = runs.map(\.text)
+        for (i, run) in runs.enumerated() {
+            guard let session = await AppleSessions.shared.session(from: run.language, to: target),
+                  let response = try? await session.translate(run.text) else { continue }
+            translations[i] = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return MixedText.replacing(runs, with: translations, in: text)
     }
 
     /// Translates as soon as the languages are downloaded, however that happens: from the

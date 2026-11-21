@@ -4,7 +4,6 @@ import PasteClipCore
 import PasteClipSystem
 import ScriptingBridge
 import SwiftUI
-import VisionKit
 
 /// Images floated above every window, for keeping something in view while you work. Scrolling
 /// over one makes it clearer or fainter; pinching or ⌘-scrolling zooms; T shows it translated.
@@ -95,6 +94,8 @@ final class FloatingImages {
         }
         // The text read in one part of the image, as text copied from the screen is: a clip
         // from "Screen Text".
+        window.recognitionLanguages = { [weak self] in self?.store.recognitionLanguages ?? TextRecognizer.defaultLanguages }
+        window.startReading()
         window.onCopyText = { [weak self] text in
             guard let self else { return }
             if let item = self.store.addText(text, source: "Screen Text") {
@@ -485,6 +486,8 @@ final class FloatingImageWindow {
     var onCopy: () -> Void = {}
     /// Copies the text read in one part of the image.
     var onCopyText: (String) -> Void = { _ in }
+    /// The languages text is read in (Settings → Text Recognition).
+    var recognitionLanguages: () -> [String] = { TextRecognizer.defaultLanguages }
     /// Opens Google Translate's Images page for the original image, into a language.
     var onGoogle: (String) -> Void = { _ in }
     /// Asks for a translation into a language, or the first one the text isn't in.
@@ -631,6 +634,9 @@ final class FloatingImageWindow {
         flash()
     }
 
+    /// Starts reading the picture's text, so it can be selected.
+    func startReading() { content.beginReading(languages: recognitionLanguages()) }
+
     func close() {
         flashTimer?.invalidate()
         content.stopAnalysing()
@@ -723,13 +729,14 @@ final class FloatingImageWindow {
     func showTranslation(_ image: CGImage, spots: [ImageTranslation.Spot], clip: ClipItem?, target: String, problem: String? = nil) {
         translated = image
         self.spots = spots
-        content.refreshHover()
         translatedClip = clip
         state.status = nil
         state.language = target
         chosenLanguage = target
         // Also when a translation into another language replaces the one showing.
         state.showsTranslation = true
+        // After the state changes: Live Text must be hidden by now, or it takes the clicks meant for the parts.
+        content.refreshHover()
         content.setImage(image)
         flash(problem.map { "Partly translated: \($0)" }
               ?? "\(Translator.name(of: target))\(clip == nil ? "" : " · saved as a clip") · T for the original")
@@ -848,6 +855,7 @@ final class FloatingImageWindow {
             case "w": close()
             case "c":
                 if content.copySelectedText() { flash("Copied text") } else { onCopy(); flash("Copied") }
+            case "a": if !content.selectAllText() { return false }
             case "=", "+": setZoom(state.zoom * 1.25, animate: true)
             case "-": setZoom(state.zoom * 0.8, animate: true)
             case "0": setZoom(1, animate: true)
@@ -946,15 +954,17 @@ final class FloatingImageView: NSView {
     private let ring = CAShapeLayer()
     private let ringGlow = CAShapeLayer()
     private var hovered: Int?
-    /// Live Text over the original, as in Preview: its text can be selected and copied. Read on
-    /// this Mac when the image is floated; hidden while the translation shows, whose parts
-    /// copy their original instead.
-    private let liveText = ImageAnalysisOverlayView()
-    private static let analyzer = ImageAnalyzer()
-    private var analysing: Task<Void, Never>?
+    private let source: CGImage
+    /// The text of the picture laid out for selecting, from the same reading translation uses (not
+    /// Live Text's, which garbles a phrase in another writing inside a sentence). Empty until read.
+    private var text = SelectableText(lines: [])
+    private var reading: Task<Void, Never>?
+    private let selectionLayer = CAShapeLayer()
+    private var selection: (SelectableText.Position, SelectableText.Position)? { didSet { drawSelection() } }
 
     init(image: CGImage, state: FloatingImageState, cornerRadius: CGFloat) {
         pixels = CGSize(width: image.width, height: image.height)
+        source = image
         self.state = state
         self.cornerRadius = cornerRadius
         super.init(frame: .zero)
@@ -973,46 +983,80 @@ final class FloatingImageView: NSView {
             layer?.addSublayer(shape)
         }
         colourRing()
-        liveText.delegate = self
-        liveText.preferredInteractionTypes = .automaticTextOnly
-        liveText.isSupplementaryInterfaceHidden = true
-        liveText.isHidden = true
-        addSubview(liveText)
-        guard ImageAnalyzer.isSupported else { return }
-        analysing = Task { @MainActor [weak self] in
-            let analysis = try? await Self.analyzer.analyze(image, orientation: .up, configuration: .init(.text))
-            guard let self, let analysis else { return }
-            self.liveText.analysis = analysis
-            self.updateLiveText()
+        selectionLayer.fillColor = NSColor.controlAccentColor.withAlphaComponent(0.3).cgColor
+        layer?.insertSublayer(selectionLayer, above: imageLayer)
+    }
+
+    /// Reads the text of the picture, in the background, so it can be selected. A small image is
+    /// read at twice its size, as translation does.
+    func beginReading(languages: [String]) {
+        guard reading == nil else { return }
+        reading = Task { @MainActor [weak self, source] in
+            let lines = await Task.detached(priority: .utility) { () -> [TextRecognizer.Line] in
+                let small = max(source.width, source.height) < 1200
+                return TextRecognizer.lines(in: small ? TextRecognizer.upscaled(source, by: 2) : source, languages: languages)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.text = SelectableText(lines: lines)
+            self.window?.invalidateCursorRects(for: self)
         }
     }
 
-    /// Stops reading the image for Live Text, when it's closed before that's done.
-    func stopAnalysing() { analysing?.cancel() }
+    /// Stops reading the image, when it's closed before that's done.
+    func stopAnalysing() { reading?.cancel() }
 
-    /// Live Text works on the original only, and not through a locked image.
-    private func updateLiveText() {
-        let off = state.showsTranslation || state.locked || liveText.analysis == nil
-        if off, liveText.hasActiveTextSelection { liveText.resetSelection() }
-        liveText.isHidden = off
+    /// Text can be selected on the original only, and not through a locked image.
+    private var selectable: Bool { !state.showsTranslation && !state.locked && !text.isEmpty }
+
+    private func updateSelectable() {
+        if !selectable, selection != nil { selection = nil }
+        window?.invalidateCursorRects(for: self)
     }
 
-    /// Copies the text selected with Live Text, if any.
+    /// Copies the selected text, if any.
     func copySelectedText() -> Bool {
-        guard !liveText.isHidden, liveText.hasActiveTextSelection, !liveText.selectedText.isEmpty else { return false }
-        window_?.onCopyText(liveText.selectedText)
+        guard selectable, let (a, b) = selection else { return false }
+        let string = text.string(from: a, to: b)
+        guard !string.isEmpty else { return false }
+        window_?.onCopyText(string)
         return true
     }
 
-    /// Live Text takes the pointer over its text (and while text is selected, so a click
-    /// elsewhere clears it); anywhere else the image moves, zooms and shows its menu as before.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = super.hitTest(point)
-        guard let hit, hit === liveText || hit.isDescendant(of: liveText) else { return hit }
-        // It takes points from the top left, though the view's origin is at the bottom left.
-        let inside = liveText.convert(point, from: superview)
-        let item = liveText.hasInteractiveItem(at: CGPoint(x: inside.x, y: liveText.bounds.height - inside.y))
-        return item || liveText.hasActiveTextSelection ? hit : self
+    /// Selects all the text, if there is any to select.
+    func selectAllText() -> Bool {
+        guard selectable, let all = text.all else { return false }
+        selection = all
+        return true
+    }
+
+    private func drawSelection() {
+        let path = CGMutablePath()
+        if let (a, b) = selection {
+            for rect in text.rects(from: a, to: b) {
+                let box = CGRect(x: rect.minX * bounds.width, y: rect.minY * bounds.height,
+                                 width: rect.width * bounds.width, height: rect.height * bounds.height).insetBy(dx: -1.5, dy: -1)
+                path.addRoundedRect(in: box, cornerWidth: 3, cornerHeight: 3)
+            }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        selectionLayer.path = path
+        CATransaction.commit()
+    }
+
+    /// Where `point` (in the view) is on the picture, 0…1 from the bottom left.
+    private func normalized(_ point: NSPoint) -> CGPoint {
+        CGPoint(x: point.x / max(bounds.width, 1), y: point.y / max(bounds.height, 1))
+    }
+
+    /// The I-beam over text that can be selected.
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard selectable else { return }
+        for rect in text.rects(from: SelectableText.Position(unit: 0, char: 0), to: text.all!.1) {
+            addCursorRect(CGRect(x: rect.minX * bounds.width, y: rect.minY * bounds.height,
+                                 width: rect.width * bounds.width, height: rect.height * bounds.height), cursor: .iBeam)
+        }
     }
 
     private func colourRing() {
@@ -1065,7 +1109,8 @@ final class FloatingImageView: NSView {
         rim.update(cornerRadius: cornerRadius, light: isLight)
         ring.frame = bounds
         ringGlow.frame = bounds
-        liveText.frame = bounds
+        selectionLayer.frame = bounds
+        drawSelection()
         if let hovered, let spot = window_?.spots[safe: hovered] {
             ring.path = path(of: spot)
             ringGlow.path = ring.path
@@ -1092,8 +1137,28 @@ final class FloatingImageView: NSView {
     /// from anywhere else.
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        if event.clickCount == 2 { return window_?.toggleActualSize() ?? () }
         let start = event.locationInWindow
+        let here = normalized(convert(start, from: nil))
+        // On text of the original: select it (a double click a word, a triple click the row), as
+        // in any text; dragging from anywhere else moves the image.
+        if selectable, text.isOverText(here) {
+            switch event.clickCount {
+            case 2: selection = text.word(at: here)
+            case 3...: selection = text.line(at: here)
+            default:
+                guard let window, let anchor = text.position(at: here) else { return }
+                selection = nil
+                while let next = window.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+                    if let head = text.position(at: normalized(convert(next.locationInWindow, from: nil))), head != anchor {
+                        selection = (anchor, head)
+                    }
+                    if next.type == .leftMouseUp { break }
+                }
+            }
+            return
+        }
+        if selection != nil { selection = nil }
+        if event.clickCount == 2 { return window_?.toggleActualSize() ?? () }
         guard let i = spot(at: convert(start, from: nil)), let spot = window_?.spots[safe: i], let window else {
             return window?.performDrag(with: event) ?? ()
         }
@@ -1110,7 +1175,7 @@ final class FloatingImageView: NSView {
 
     /// Checks the pointer again: after the translation is shown or hidden, or the image moves.
     func refreshHover() {
-        updateLiveText()
+        updateSelectable()
         guard let window, state.hovering else { return setHovered(nil) }
         setHovered(spot(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)))
     }
@@ -1438,7 +1503,3 @@ private struct ReadoutLabelStyle: LabelStyle {
     }
 }
 
-extension FloatingImageView: ImageAnalysisOverlayViewDelegate {
-    /// The picture fills the view.
-    func contentsRect(for overlayView: ImageAnalysisOverlayView) -> CGRect { CGRect(x: 0, y: 0, width: 1, height: 1) }
-}

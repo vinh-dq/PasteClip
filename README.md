@@ -44,7 +44,7 @@ The editor has arrows, boxes, text, highlighter, numbered steps, pixelate and cr
 
 ### Keep an image in view, and copy its text
 **⌃F** floats an image above every window: for a reference, a spec or a colour palette while you
-work. Zoom, fade it, or let clicks pass through. Its text can be selected and copied with Live Text.
+work. Zoom, fade it, or let clicks pass through. Its text can be selected with the pointer and copied (⌘C), read the same way translation reads it.
 
 <img src="docs/media/float-live-text.jpg" width="600" alt="A poster floating on screen with a line of its text selected">
 
@@ -111,7 +111,7 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 
 - **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T); any other key closes it and goes on to the app you're typing in
 - **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
-- **Float images**: ⌃F keeps an image above every window. Its text can be selected and copied (⌘C) with Live Text, as in Preview. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
+- **Float images**: ⌃F keeps an image above every window. Its text can be selected (drag; double click a word, triple click a row, ⌘A all) and copied (⌘C), read the same way translation reads it, so Vietnamese, English and Japanese in one sentence copy right. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
 - **Copy text from the screen**: ⌥Space, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
 
 ### Privacy and settings
