@@ -678,3 +678,66 @@ private func ops(in contents: [[String: Data]]?) throws -> [[String: Any]] {
     #expect(ClipStore(directory: dir, pasteboard: pb).items.isEmpty)
     #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".bak") }.count >= 1)
 }
+
+/// Hands over its data only from the given request on, as an app does that is still fetching it.
+private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
+    let data: Data
+    let after: Int
+    var requests = 0
+    init(_ data: Data, after: Int) { self.data = data; self.after = after }
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        requests += 1
+        if requests >= after { item.setData(data, forType: type) }
+    }
+}
+
+private func samplePicture(_ type: NSBitmapImageRep.FileType) -> Data {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    return rep.representation(using: type, properties: [:])!
+}
+
+private func waitUntil(_ timeout: Double = 3, _ done: () -> Bool) async {
+    let end = Date().addingTimeInterval(timeout)
+    while !done(), Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
+}
+
+@Test func keepsPicturesInOtherFormatsAsPNG() async {
+    let (store, pb, _) = makeStore()
+    pb.clearContents()
+    pb.setData(samplePicture(.jpeg), forType: .init("public.jpeg"))
+    store.poll()
+    await waitUntil { !store.items.isEmpty }
+    #expect(store.items.count == 1)
+    #expect(store.items.first?.kind == .image)
+    #expect(store.items.first.flatMap { store.image(for: $0) } != nil)
+}
+
+@Test func retriesAnImageWhoseDataArrivesLate() async {
+    ClipStore.retryInterval = 0.02
+    defer { ClipStore.retryInterval = 0.3 }
+    let (store, pb, _) = makeStore()
+    // The type is announced first and the data follows, with no new change of the clipboard.
+    pb.declareTypes([.png], owner: nil)
+    store.poll()
+    #expect(store.items.isEmpty)
+    try? await Task.sleep(nanoseconds: 100_000_000)
+    pb.setData(samplePicture(.png), forType: .png)
+    await waitUntil { !store.items.isEmpty }
+    #expect(store.items.count == 1)
+}
+
+@Test func notesACopyThatNeverTurnsUp() async {
+    ClipStore.retryInterval = 0.01
+    defer { ClipStore.retryInterval = 0.3 }
+    let (store, pb, _) = makeStore()
+    let item = NSPasteboardItem()
+    item.setDataProvider(SlowProvider(Data(), after: Int.max), forTypes: [.png])
+    pb.clearContents()
+    pb.writeObjects([item])
+    store.poll()
+    await waitUntil(5) { FileManager.default.fileExists(atPath: store.captureLog.path) }
+    let log = (try? String(contentsOf: store.captureLog, encoding: .utf8)) ?? ""
+    #expect(store.items.isEmpty)
+    #expect(log.contains("public.png"))
+}
