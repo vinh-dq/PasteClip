@@ -21,7 +21,8 @@ Status: ✅ done · ⚠️ done, needs a signed build to run · 🔜 planned
 | # | Requirement | Status |
 |---|---|---|
 | 2.1 | Polls `NSPasteboard.general.changeCount` every 0.4 s (macOS has no change notification) | ✅ |
-| 2.2 | Recognises five kinds, checked in this order: **file** (file URLs), **color** (`#RGB`, `#RRGGBB`, `#RRGGBBAA`), **link** (a single `http(s)` URL with a host), **text**, **image** (PNG/TIFF) | ✅ |
+| 2.1a | A copy whose data isn't readable yet (a browser still fetching an image) is looked at again every 0.3 s for about 5 s, unless something newer is copied. One that never turns up is noted in `capture-failures.log` beside the history: time, app, and each pasteboard type with its size, never the content | ✅ |
+| 2.2 | Recognises five kinds, checked in this order: **file** (file URLs), **color** (`#RGB`, `#RRGGBB`, `#RRGGBBAA`), **link** (a single `http(s)` URL with a host), **text**, **image** (PNG as it came; TIFF, JPEG, HEIC, GIF, WebP and PDF converted to PNG off the main thread) | ✅ |
 | 2.3 | Keeps the formatted version of text (RTF, else HTML) next to the plain text | ✅ |
 | 2.4 | Finds text in image clips with Vision, in the background, so images are searchable (can be turned off; uses the languages from 9.8) | ✅ |
 | 2.5 | Records the source app (bundle ID and name) from the frontmost app | ✅ |
