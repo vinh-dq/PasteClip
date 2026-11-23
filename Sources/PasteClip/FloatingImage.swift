@@ -28,6 +28,11 @@ final class FloatingImages {
     private var pinchSource: CFRunLoopSource?
     /// When the last key went to another app.
     private var keyElsewhere = Date.distantPast
+    /// The image that was clicked last, if no click has been anywhere else since. Only it takes
+    /// ⌘C from the keyboard: with the pointer merely resting on an image, ⌘C is for the app in
+    /// front (the text selected behind a floating image), not for the image.
+    private weak var clicked: FloatingImageWindow?
+    private var clickMonitor: Any?
     /// Space held down over an image, which gets its release too, wherever the pointer is then.
     private weak var spaceHeldBy: FloatingImageWindow?
     var onEdit: (ClipItem) -> Void = { _ in }
@@ -88,6 +93,7 @@ final class FloatingImages {
             }
             NSSound.beep()
         }
+        window.panel.onClick = { [weak self, weak window] in self?.clicked = window }
         window.onCopy = { [weak self, weak window] in
             guard let self, let window else { return }
             self.copy(window.shownClip, image: window.shownImage)
@@ -163,6 +169,17 @@ final class FloatingImages {
     }
 
     private func watchPinches() {
+        // Clicks in other apps (or on the desktop) end the image's claim on ⌘C. Clicks on the
+        // images themselves never reach a global monitor.
+        if windows.isEmpty {
+            if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+            clickMonitor = nil
+            clicked = nil
+        } else if clickMonitor == nil {
+            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+                self?.clicked = nil
+            }
+        }
         if windows.isEmpty {
             if let pinchTap {
                 CGEvent.tapEnable(tap: pinchTap, enable: false)
@@ -220,6 +237,11 @@ final class FloatingImages {
         guard let window = windows.last(where: { $0.pointerOver && !$0.state.locked }),
               window.pointerArrived > keyElsewhere else {
             if ns.type == .keyDown { keyElsewhere = Date() }
+            return false
+        }
+        // ⌘C copies the image only once it has been clicked; before that it is the front app's.
+        if ns.type == .keyDown, ns.keyCode == 8, ns.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
+           clicked !== window {
             return false
         }
         guard window.handle(ns) else {
@@ -436,7 +458,11 @@ final class FloatingImagePanel: NSPanel {
     /// Keys for the image, whichever view has the focus (a clicked button can take it).
     var onKey: ((NSEvent) -> Bool)?
 
+    /// A click in the image.
+    var onClick: (() -> Void)?
+
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown { onClick?() }
         if event.type == .keyDown || event.type == .keyUp, onKey?(event) == true { return }
         super.sendEvent(event)
     }
