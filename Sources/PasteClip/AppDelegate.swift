@@ -13,11 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let store = ClipStore(directory: CommandLine.arguments.firstIndex(of: "--store")
         .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) : nil })
     private lazy var apiKeys = APIKeys(directory: store.directory)
-    private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, keys: apiKeys)
+    private lazy var settingsWindow = SettingsWindowController(settings: settings, store: store, keys: apiKeys, notes: noteStore)
     private lazy var shelf = ShelfController(store: store, settings: settings) { [weak self] in
         self?.settingsWindow.show()
     }
     private lazy var stackPanel = StackController(store: store, settings: settings)
+    private lazy var noteStore = NoteStore(directory: store.directory)
+    private lazy var notes = NotesController(store: noteStore, settings: settings)
     private lazy var screenText = ScreenTextCapture(store: store, settings: settings)
     private lazy var screenshot = ScreenshotCapture(store: store, settings: settings)
     private let screenshotOffer = ScreenshotOffer()
@@ -35,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bindSettings()
         store.onCapture = { [weak self] _ in self?.play("Tink") }
         shelf.onPasted = { [weak self] in self?.play("Pop") }
+        shelf.onSaveAsNote = { [weak self] items in
+            let text = items.filter(\.isTextual).compactMap(\.text).joined(separator: "\n\n")
+            if !text.isEmpty { self?.notes.saveAsNote(text) }
+        }
         screenText.onCopied = { [weak self] in self?.play("Tink") }
         screenText.onTranslate = { [weak self] text in self?.translation.show(text) }
         shelf.onTranslateItems = { [weak self] items in self?.translation.show(items) }
@@ -59,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         store.start()
+        notes.start()
         // Moves keys left in a plain file by earlier builds into the keychain, without reading it otherwise.
         _ = apiKeys
         setupStatusItem()
@@ -97,6 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if args[i + 1] == "stack" {
             store.stackMode = true
             for item in store.items.filter { $0.kind == .text }.prefix(3).reversed() { store.addToStack(item) }
+        } else if args[i + 1] == "note" {
+            notes.newNote()
+        } else if args[i + 1] == "notes-list" {
+            notes.showList(.all)
         } else if args[i + 1] == "shelf" {
             shelf.show()
         } else if args[i + 1] == "preview" {
@@ -125,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         store.flush()
+        notes.flush()
     }
 
     private func bindSettings() {
@@ -154,9 +166,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Re-register shortcuts when they change; drop them while a shortcut field is recording.
         let shortcuts = [settings.$shelfHotKey, settings.$stackHotKey, settings.$pasteNextHotKey,
                          settings.$captureTextHotKey, settings.$screenshotHotKey, settings.$translateHotKey,
-                         settings.$translateScreenHotKey, settings.$floatImageKey]
+                         settings.$translateScreenHotKey, settings.$floatImageKey,
+                         settings.$newNoteHotKey, settings.$allNotesHotKey, settings.$archivedNotesHotKey]
         Publishers.MergeMany(shortcuts.map { $0.map { _ in () }.eraseToAnyPublisher() }
-                             + [settings.$isRecordingShortcut.map { _ in () }.eraseToAnyPublisher()])
+                             + [settings.$isRecordingShortcut.map { _ in () }.eraseToAnyPublisher(),
+                                settings.$notesEnabled.map { _ in () }.eraseToAnyPublisher()])
             .debounce(for: .milliseconds(10), scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.registerHotKeys() }
             .store(in: &subscriptions)
@@ -193,7 +207,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (settings.translateScreenHotKey, { [weak self] in self?.translateScreen() }),
             (settings.floatImageKey, { [weak self] in self?.floatImage() }),
             (settings.translateHotKey, { [weak self] in self?.translate() }),
-        ]
+        ] + (settings.notesEnabled ? [
+            (settings.newNoteHotKey, { [weak self] in self?.notes.newNote() }),
+            (settings.allNotesHotKey, { [weak self] in self?.notes.showList(.all) }),
+            (settings.archivedNotesHotKey, { [weak self] in self?.notes.showList(.archived) }),
+        ] : [])
         for (combo, action) in bindings {
             guard let combo else { continue }
             if let hotKey = HotKey(keyCode: combo.keyCode, modifiers: combo.modifiers, action: {
@@ -312,6 +330,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Translate Screen Area", #selector(translateScreen), settings.translateScreenHotKey))
         menu.addItem(item("Float Latest Image", #selector(floatImage), settings.floatImageKey))
         menu.addItem(item("Translate Selection or Clipboard", #selector(translate), settings.translateHotKey))
+        if settings.notesEnabled {
+            menu.addItem(.separator())
+            menu.addItem(item("New Note", #selector(newNote), settings.newNoteHotKey))
+            menu.addItem(item("All Notes", #selector(allNotes), settings.allNotesHotKey))
+            menu.addItem(item("Archived Notes", #selector(archivedNotes), settings.archivedNotesHotKey))
+            menu.addItem(.separator())
+        }
         if floatingImages.count > 0 {
             menu.addItem(.separator())
             if floatingImages.hasLocked { menu.addItem(item("Unlock Floating Images", #selector(unlockFloatingImages), nil)) }
@@ -348,6 +373,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openShelf() { shelf.show() }
+
+    @objc private func newNote() { notes.newNote() }
+
+    @objc private func allNotes() { notes.showList(.all) }
+
+    @objc private func archivedNotes() { notes.showList(.archived) }
 
     @objc private func closeFloatingImages() { floatingImages.closeAll() }
 

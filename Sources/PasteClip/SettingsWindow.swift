@@ -9,18 +9,20 @@ final class SettingsWindowController {
     private let settings: AppSettings
     private let store: ClipStore
     private let keys: APIKeys
+    private let notes: NoteStore
     private let page = ViewState(SettingsPage.general)
 
-    init(settings: AppSettings, store: ClipStore, keys: APIKeys) {
+    init(settings: AppSettings, store: ClipStore, keys: APIKeys, notes: NoteStore) {
         self.settings = settings
         self.store = store
         self.keys = keys
+        self.notes = notes
     }
 
     func show(_ initialPage: SettingsPage? = nil) {
         if let initialPage { page.value = initialPage }
         if window == nil {
-            let root = SettingsView(settings: settings, store: store, keys: keys, page: page)
+            let root = SettingsView(settings: settings, store: store, keys: keys, notes: notes, page: page)
             let window = NSWindow(contentViewController: NSHostingController(rootView: root))
             window.title = "PasteClip Settings"
             window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
@@ -36,7 +38,7 @@ final class SettingsWindowController {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, text, translation, privacy, shortcuts
+    case general, text, translation, notes, privacy, shortcuts
     var id: String { rawValue }
 
     var title: String { self == .text ? "Text Recognition" : rawValue.capitalized }
@@ -46,6 +48,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .text: return "text.viewfinder"
         case .translation: return "character.bubble"
+        case .notes: return "note.text"
         case .privacy: return "hand.raised"
         case .shortcuts: return "keyboard"
         }
@@ -56,6 +59,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     let store: ClipStore
     let keys: APIKeys
+    let notes: NoteStore
     @ObservedObject var page: ViewState<SettingsPage>
 
     var body: some View {
@@ -106,6 +110,7 @@ struct SettingsView: View {
                 case .general: GeneralPage(settings: settings, store: store)
                 case .text: TextRecognitionPage(settings: settings)
                 case .translation: TranslationPage(settings: settings, keys: keys)
+                case .notes: NotesPage(settings: settings, notes: notes)
                 case .privacy: PrivacyPage(settings: settings)
                 case .shortcuts: ShortcutsPage(settings: settings)
                 }
@@ -872,6 +877,126 @@ private struct PrivacyPage: View {
     }
 }
 
+// MARK: - Notes
+
+private struct NotesPage: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var notes: NoteStore
+    @StateObject private var message = ViewState<String?>(nil)
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show notes on the screen edge", isOn: $settings.notesEnabled)
+            } footer: {
+                Text("Rest the pointer on the small bar to open your notes, point at one to peek, click to write.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if settings.notesEnabled {
+                Section("Screen edge") {
+                    Picker("Edge", selection: $settings.notesEdge) {
+                        ForEach(NotesEdge.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("Place", selection: $settings.notesPlacement) {
+                        ForEach(NotesPlacement.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("Screens", selection: $settings.notesOnAllScreens) {
+                        Text("All screens").tag(true)
+                        Text("Main screen only").tag(false)
+                    }
+                    LabeledContent("Wait before opening") {
+                        HStack {
+                            Slider(value: Binding(get: { Double(settings.notesHoverDelay) },
+                                                  set: { settings.notesHoverDelay = Int($0) }), in: 0...600, step: 50)
+                            Text("\(settings.notesHoverDelay) ms").monospacedDigit().foregroundStyle(.secondary)
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    Toggle("Show in full-screen apps", isOn: $settings.notesShowInFullScreen)
+                }
+                Section {
+                    Picker("Font", selection: $settings.notesFont) {
+                        ForEach(NotesFont.allCases) { Text($0.title).tag($0) }
+                    }
+                    LabeledContent("Size") {
+                        HStack {
+                            Slider(value: $settings.notesFontSize, in: AppSettings.notesFontSizes, step: 0.5)
+                            Text(String(format: "%.1f pt", settings.notesFontSize)).monospacedDigit().foregroundStyle(.secondary)
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    Toggle("Format Markdown as you type", isOn: $settings.notesMarkdown)
+                } header: {
+                    Text("Writing")
+                } footer: {
+                    Text("Markdown and tasks stay plain text, so a note reads the same in any app.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Shortcuts") {
+                    LabeledContent("New note") { ShortcutField(combo: $settings.newNoteHotKey, settings: settings) }
+                    LabeledContent("All notes") { ShortcutField(combo: $settings.allNotesHotKey, settings: settings) }
+                    LabeledContent("Archived notes") { ShortcutField(combo: $settings.archivedNotesHotKey, settings: settings) }
+                }
+                Section("In a note") {
+                    NotesKeyList()
+                }
+            }
+            Section {
+                LabeledContent("\(notes.notes.count) \(notes.notes.count == 1 ? "note" : "notes") on this Mac") {
+                    HStack {
+                        Button("Import…") { importNotes() }
+                        Button("Export…") { exportNotes() }
+                    }
+                }
+            } footer: {
+                Text((message.value.map { $0 + " " } ?? "") + "Notes are kept in a file on this Mac, not encrypted; exported files aren't either.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func exportNotes() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "PasteClip Notes.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url, let data = notes.exportData() else { return }
+        do { try data.write(to: url, options: .atomic); message.value = "Exported." }
+        catch { message.value = "Couldn't save the file." }
+    }
+
+    private func importNotes() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        let added = notes.importData(data)
+        message.value = added == 0 ? "Nothing new in that file." : "Added \(added) \(added == 1 ? "note" : "notes")."
+    }
+}
+
+/// The keys that work inside a note, in the same columns as the rest of Settings.
+private struct NotesKeyList: View {
+    private let rows: [(String, String)] = [
+        ("Checklist", "⌘T"), ("Find", "⌘F"), ("Keep on screen", "⌘P"), ("Close", "esc"),
+        ("Bold", "⌘B"), ("Italic", "⌘I"), ("Code", "⌘E"), ("Strikethrough", "⇧⌘X"), ("Highlight", "⇧⌘H"),
+        ("Heading", "⌥⌘1–3"), ("Bulleted list", "⇧⌘L"), ("Numbered list", "⇧⌘N"), ("Quote", "⇧⌘U"),
+        ("Indent list item", "Tab"), ("Outdent", "⇧Tab"),
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 24), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+            ForEach(rows, id: \.0) { row in
+                HStack {
+                    Text(row.0).font(.system(size: 12))
+                    Spacer()
+                    Text(row.1).font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.primary.opacity(0.07)))
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Shortcuts
 
 private struct ShortcutsPage: View {
@@ -888,6 +1013,9 @@ private struct ShortcutsPage: View {
                 LabeledContent("Translate screen area") { ShortcutField(combo: $settings.translateScreenHotKey, settings: settings) }
                 LabeledContent("Float latest image") { ShortcutField(combo: $settings.floatImageKey, settings: settings) }
                 LabeledContent("Translate selection or clipboard") { ShortcutField(combo: $settings.translateHotKey, settings: settings) }
+                LabeledContent("New note") { ShortcutField(combo: $settings.newNoteHotKey, settings: settings) }
+                LabeledContent("All notes") { ShortcutField(combo: $settings.allNotesHotKey, settings: settings) }
+                LabeledContent("Archived notes") { ShortcutField(combo: $settings.archivedNotesHotKey, settings: settings) }
             } footer: {
                 Text("These work from any app, and come before the app's own shortcuts. Change or clear any that get in the way.")
                     .font(.caption).foregroundStyle(.secondary)

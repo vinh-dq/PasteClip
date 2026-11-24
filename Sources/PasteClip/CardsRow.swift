@@ -138,6 +138,9 @@ private struct CardMenu: View {
                 }
                 .keyboardShortcut(settings.floatImageKey)
             }
+            if settings.notesEnabled, picked.contains(where: \.isTextual) {
+                Button("Save as Note") { state.onSaveAsNote(picked) }
+            }
             Divider()
             Button("Add to Paste Stack") { picked.forEach(store.addToStack) }
             Divider()
@@ -174,6 +177,9 @@ private struct CardMenu: View {
                 .keyboardShortcut(settings.floatImageKey)
         }
         Button("Rename…") { state.startRenaming(index) }
+        if settings.notesEnabled, item.isTextual {
+            Button("Save as Note") { state.onSaveAsNote([item]) }
+        }
         if item.translatableText?.isEmpty == false || item.isImage {
             Menu("Translate") {
                 Button("Translate") { state.onTranslate(item, nil) }

@@ -158,6 +158,8 @@ final class ShelfState: ObservableObject {
     var onFloatImages: ([ClipItem]) -> Void = { _ in }
     /// Floats images with their text translated where it is.
     var onTranslateImages: ([ClipItem]) -> Void = { _ in }
+    /// Makes a note of the text of clips.
+    var onSaveAsNote: ([ClipItem]) -> Void = { _ in }
     /// The card's translate button: an image is translated where its text is, anything else in the translation panel.
     var onTranslateClip: (ClipItem) -> Void = { _ in }
     private var subscriptions = Set<AnyCancellable>()
