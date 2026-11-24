@@ -54,6 +54,8 @@ final class ShelfController {
     var onFloatImages: ([ClipItem]) -> Void = { _ in }
     /// Floats images with their text translated in place.
     var onTranslateImages: ([ClipItem]) -> Void = { _ in }
+    /// Makes a note of the text of clips.
+    var onSaveAsNote: ([ClipItem]) -> Void = { _ in }
 
     var isVisible: Bool { panel.isVisible }
 
@@ -74,6 +76,7 @@ final class ShelfController {
         state.onEditImage = { [weak self] item in self?.editImage(item) }
         state.onFloatImages = { [weak self] items in self?.floatImages(items) }
         state.onTranslateImages = { [weak self] items in self?.translateImages(items) }
+        state.onSaveAsNote = { [weak self] items in self?.onSaveAsNote(items) }
         state.onTranslateClip = { [weak self] item in
             guard let self else { return }
             if item.isImage { self.translateImages([item]) } else { self.state.onTranslate(item, nil) }

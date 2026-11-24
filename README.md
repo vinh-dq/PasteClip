@@ -59,6 +59,15 @@ what you copy and pastes it back one by one, in the same order.
 </tr>
 </table>
 
+### Notes on the edge of your screen
+A slim bar on the right edge of the screen holds your notes. Rest the pointer on it and it opens
+into one tab per note; point at a tab to peek at the note, click it to write. Type **/** on an empty
+line for a title, checklist, list, quote or highlight, or select text for a bar of formats. Notes are
+plain Markdown with the marks out of the way, links open with ⌘-click, and a text clip in the shelf
+becomes a note with right-click, Save as Note. ⌥⌘N starts a new note from any app.
+
+<img src="docs/media/notes.svg" width="760" alt="Animation: the notes bar opens into tabs, a note is previewed, opened and formatted with the slash menu">
+
 All demos use sample content; nothing in them comes from a real clipboard.
 
 ## Install
@@ -114,6 +123,12 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 - **Float images**: ⌃F keeps an image above every window. Its text can be selected (drag; double click a word, triple click a row, ⌘A all) and copied (⌘C), read the same way translation reads it, so Vietnamese, English and Japanese in one sentence copy right. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
 - **Copy text from the screen**: ⌥Space, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
 
+### Notes
+
+- **Notes on the screen edge**: a slim bar with a coloured pill per note sits on the right edge of the screen. Rest the pointer on it and it opens into one tab per note; point at a tab to peek at the note, click to write. Drag a tab to reorder your notes; right-click one to pin, colour, copy, archive or delete it. Not while you scroll or drag
+- **Writing**: plain Markdown that is styled as you type, with the marks out of the way (bold, italic, strikethrough, highlight, code, headings, lists, quotes, tasks you tick with a click); Type `/` on an empty line for a format menu (title, checklist, list, quote, highlight, code), or select text for a bar of formats; Return continues a list, Tab and ⇧Tab indent and outdent; find, undo, font and size, eight colours on tinted Liquid Glass. Links open with ⌘-click. Notes save as you type; pin one to keep it on screen, archive or delete it (with Undo)
+- **Save as Note**: right-click a text clip in the shelf. ⌥⌘N a new note, ⌥⌘A all notes, ⌥⌘L archived notes (changeable). Notes live in a file on this Mac, not encrypted; import and export in Settings → Notes
+
 ### Privacy and settings
 
 - **Privacy**: skips clips that password managers mark as private, and anything copied in apps you exclude
@@ -144,7 +159,7 @@ app is signed ad hoc, macOS treats each rebuild as a new app, and asks for permi
 
 ## Global shortcuts
 
-All eight can be changed or removed in Settings → Shortcuts. They come before the app in front's own
+All eleven can be changed or removed in Settings → Shortcuts. They come before the app in front's own
 shortcuts, so change any that get in the way.
 
 | Key | Action |
@@ -156,6 +171,7 @@ shortcuts, so change any that get in the way.
 | ⇧⌘2 | Translate an area of the screen: the translation floats over it, where the text was |
 | ⌥Space | Copy text from an area of the screen |
 | ⌃F | Float the latest image (with the shelf open: the selected images) |
+| ⌥⌘N / ⌥⌘A / ⌥⌘L | New note / all notes / archived notes |
 | ⌃Space | Translate the selected text, or the clipboard: text opens the translation panel, an image is translated where its text is |
 
 ⌃Space is also macOS's shortcut for switching input sources. If that one is turned on

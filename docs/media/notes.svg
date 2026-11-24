@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" role="img" aria-labelledby="t d">
+  <title id="t">Notes on the screen edge</title>
+  <desc id="d">A slim bar on the right edge of the screen opens into note tabs when the pointer rests on it; pointing at a tab previews the note, clicking opens it for writing, and typing a slash on an empty line offers formats.</desc>
+  <style>
+    :root { --cycle: 10s; }
+    text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; }
+    .tab, .ttl, .preview, .editor, .menu, .pointer, .rail { animation-duration: var(--cycle); animation-iteration-count: infinite; animation-timing-function: ease-out; }
+    .tab { transform-box: fill-box; transform-origin: right center; animation-name: widen; transform: scaleX(.037); opacity: 0; }
+    .ttl { animation-name: titles; opacity: 0; }
+    .rail { animation-name: rail; }
+    .preview { animation-name: preview; opacity: 0; }
+    .editor { animation-name: editor; opacity: 0; }
+    .menu { animation-name: menu; opacity: 0; }
+    .pointer { animation-name: pointer; }
+    @keyframes widen { 0%, 11% { transform: scaleX(.037); opacity: 0; } 12% { transform: scaleX(.037); opacity: 1; } 18%, 88% { transform: scaleX(1); opacity: 1; } 95% { transform: scaleX(.037); opacity: 1; } 96%, 100% { transform: scaleX(.037); opacity: 0; } }
+    @keyframes titles { 0%, 18% { opacity: 0; } 23%, 86% { opacity: 1; } 91%, 100% { opacity: 0; } }
+    @keyframes rail { 0%, 12% { opacity: 1; } 19%, 90% { opacity: 0; } 97%, 100% { opacity: 1; } }
+    @keyframes preview { 0%, 26% { opacity: 0; transform: translateX(14px); } 32%, 54% { opacity: 1; transform: translateX(0); } 59%, 100% { opacity: 0; transform: translateX(14px); } }
+    @keyframes editor { 0%, 58% { opacity: 0; transform: translateX(14px); } 65%, 86% { opacity: 1; transform: translateX(0); } 91%, 100% { opacity: 0; transform: translateX(14px); } }
+    @keyframes menu { 0%, 74% { opacity: 0; transform: translateY(-4px); } 79%, 86% { opacity: 1; transform: translateY(0); } 90%, 100% { opacity: 0; } }
+    @keyframes pointer {
+      0%, 8% { transform: translate(0, 0); } 14% { transform: translate(-6px, 0); } 26%, 56% { transform: translate(-48px, 36px); }
+      62%, 88% { transform: translate(-48px, 36px); } 96%, 100% { transform: translate(0, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .tab { transform: none; animation: none; } .ttl { opacity: 1; animation: none; } .rail { opacity: 0; animation: none; }
+      .preview { opacity: 1; animation: none; } .editor, .menu, .pointer { display: none; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#2b2f55" flood-opacity=".22"/></filter>
+    <clipPath id="stage"><rect width="760" height="300" rx="14"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#stage)">
+    <rect width="760" height="300" fill="#d0dae6"/>
+    <rect width="760" height="300" fill="none" stroke="#b9c5d4"/>
+
+    <!-- a window of some app, to show the notes are over it -->
+    <g filter="url(#soft)">
+      <rect x="96" y="62" width="300" height="176" rx="10" fill="#fff"/>
+    </g>
+    <circle cx="112" cy="78" r="3.6" fill="#ec5f57"/><circle cx="124" cy="78" r="3.6" fill="#f4bf4f"/><circle cx="136" cy="78" r="3.6" fill="#61c554"/>
+    <rect x="112" y="98" width="96" height="62" rx="6" fill="#4d97f7"/>
+    <rect x="224" y="100" width="150" height="6" rx="3" fill="#e1e3e7"/><rect x="224" y="116" width="110" height="6" rx="3" fill="#e1e3e7"/><rect x="224" y="132" width="132" height="6" rx="3" fill="#e1e3e7"/>
+    <rect x="112" y="178" width="262" height="6" rx="3" fill="#e1e3e7"/><rect x="112" y="194" width="196" height="6" rx="3" fill="#e1e3e7"/>
+
+    <!-- the bar at rest: dark glass with a thin pill per note -->
+    <g class="rail">
+      <rect x="744" y="55" width="16" height="190" rx="8" fill="#2c2f3d" opacity=".78"/>
+      <rect x="752" y="55" width="8" height="190" fill="#2c2f3d" opacity=".78"/>
+      <rect x="749" y="70" width="6" height="30" rx="3" fill="#f2c94c"/>
+      <rect x="749" y="106" width="6" height="30" rx="3" fill="#5b9bf0"/>
+      <rect x="749" y="142" width="6" height="30" rx="3" fill="#56b985"/>
+      <rect x="749" y="178" width="6" height="30" rx="3" fill="#9a78ee"/>
+      <rect x="749" y="214" width="6" height="30" rx="3" fill="#f08c4f"/>
+    </g>
+
+    <!-- the tabs: the same rows, wider -->
+    <g>
+      <path class="tab" d="M608 70 h152 v30 h-152 a10 10 0 0 1 -10 -10 v-10 a10 10 0 0 1 10 -10 z" fill="#f2c94c"/>
+      <path class="tab" d="M608 106 h152 v30 h-152 a10 10 0 0 1 -10 -10 v-10 a10 10 0 0 1 10 -10 z" fill="#5b9bf0"/>
+      <path class="tab" d="M608 142 h152 v30 h-152 a10 10 0 0 1 -10 -10 v-10 a10 10 0 0 1 10 -10 z" fill="#56b985"/>
+      <path class="tab" d="M608 178 h152 v30 h-152 a10 10 0 0 1 -10 -10 v-10 a10 10 0 0 1 10 -10 z" fill="#9a78ee"/>
+      <path class="tab" d="M608 214 h152 v30 h-152 a10 10 0 0 1 -10 -10 v-10 a10 10 0 0 1 10 -10 z" fill="#f08c4f"/>
+    </g>
+    <g class="ttl" font-size="12" font-weight="600" fill="#23222a">
+      <text x="614" y="89">Welcome to Notes</text><text x="614" y="125">Type / for formats</text><text x="614" y="161">Checklist</text>
+      <text x="614" y="197">Keys worth knowing</text><text x="614" y="233">Save a clip as a note</text>
+    </g>
+
+    <!-- the preview, when the pointer rests on a tab -->
+    <g class="preview" filter="url(#soft)">
+      <rect x="350" y="96" width="226" height="130" rx="18" fill="#bfe3cd"/>
+      <rect x="350" y="96" width="226" height="130" rx="18" fill="url(#sheen)" opacity=".5"/>
+      <text x="368" y="124" font-size="13" font-weight="700" fill="#1f2a24">Checklist</text>
+      <rect x="368" y="138" width="12" height="12" rx="3.5" fill="none" stroke="#3b4a41" stroke-width="1.3"/><text x="390" y="148" font-size="11.5" fill="#1f2a24">Click a box to tick it</text>
+      <rect x="368" y="158" width="12" height="12" rx="3.5" fill="none" stroke="#3b4a41" stroke-width="1.3"/><text x="390" y="168" font-size="11.5" fill="#1f2a24">⌘T makes any line a task</text>
+      <rect x="368" y="178" width="12" height="12" rx="3.5" fill="#3b82f6"/><path d="M371 184 l3 3 l5 -6" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="390" y="188" font-size="11.5" fill="#5d6b63" text-decoration="line-through">Return adds the next one</text>
+      <text x="368" y="214" font-size="10" fill="#5d6b63">2 min ago</text>
+    </g>
+
+    <!-- the note opened for writing, with the slash menu -->
+    <g class="editor" filter="url(#soft)">
+      <rect x="318" y="56" width="262" height="196" rx="22" fill="#bfe3cd"/>
+      <rect x="318" y="56" width="262" height="196" rx="22" fill="url(#sheen)" opacity=".5"/>
+      <text x="338" y="84" font-size="13" font-weight="700" fill="#1f2a24">Checklist</text>
+      <g fill="#3b4a41" opacity=".75" font-size="11" font-weight="600"><text x="470" y="84">A</text><text x="488" y="84">Aa</text><text x="514" y="84">☑</text><text x="534" y="84">⌖</text><text x="554" y="84">⌕</text></g>
+      <rect x="338" y="102" width="12" height="12" rx="3.5" fill="none" stroke="#3b4a41" stroke-width="1.3"/><text x="360" y="112" font-size="12" fill="#1f2a24">Click a box to tick it</text>
+      <rect x="338" y="124" width="12" height="12" rx="3.5" fill="#3b82f6"/><path d="M341 130 l3 3 l5 -6" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="360" y="134" font-size="12" fill="#5d6b63" text-decoration="line-through">Return adds the next one</text>
+      <text x="338" y="156" font-size="12" fill="#1f2a24">/</text>
+      <g transform="translate(0 0)">
+        <circle cx="342" cy="232" r="5" fill="#f2c94c"/><circle cx="358" cy="232" r="5" fill="#f08c4f"/><circle cx="374" cy="232" r="5" fill="#9a78ee"/><circle cx="390" cy="232" r="5" fill="#5b9bf0"/><circle cx="406" cy="232" r="5" fill="#56b985" stroke="#1f2a24" stroke-width="1.4"/>
+        <rect x="516" y="222" width="48" height="20" rx="10" fill="#fff" opacity=".6"/><text x="526" y="236" font-size="10.5" font-weight="600" fill="#1f2a24">Close</text>
+      </g>
+    </g>
+    <g class="menu" filter="url(#soft)">
+      <rect x="338" y="162" width="170" height="82" rx="12" fill="#f4f6f8"/>
+      <text x="352" y="182" font-size="11.5" fill="#1f2a24">Title</text><text x="478" y="182" font-size="9.5" fill="#8a93a0">⌥⌘1</text>
+      <rect x="342" y="190" width="162" height="20" rx="7" fill="#4d97f7" opacity=".22"/>
+      <text x="352" y="204" font-size="11.5" fill="#1f2a24">Checklist</text><text x="486" y="204" font-size="9.5" fill="#8a93a0">⌘T</text>
+      <text x="352" y="226" font-size="11.5" fill="#1f2a24">Bulleted list</text><text x="470" y="226" font-size="9.5" fill="#8a93a0">⇧⌘L</text>
+    </g>
+
+    <!-- the pointer -->
+    <g class="pointer"><path d="M706 128 l0 17 l4.6 -4 l3.2 7.4 l3 -1.3 l-3.2 -7.2 l6.2 -.4 z" fill="#111" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/></g>
+  </g>
+</svg>

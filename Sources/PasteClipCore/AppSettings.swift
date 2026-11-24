@@ -41,6 +41,10 @@ public struct KeyCombo: Codable, Equatable {
     public static let captureArea = KeyCombo(keyCode: 18, modifiers: command | shift, keyName: "1")
     // F = 3. Floats the latest image, or the ones selected in the shelf. It was ⌥⌘P before.
     public static let floatImage = KeyCombo(keyCode: 3, modifiers: control, keyName: "F")
+    // Notes: N = 45, A = 0, L = 37.
+    public static let newNote = KeyCombo(keyCode: 45, modifiers: option | command, keyName: "N")
+    public static let allNotes = KeyCombo(keyCode: 0, modifiers: option | command, keyName: "A")
+    public static let archivedNotes = KeyCombo(keyCode: 37, modifiers: option | command, keyName: "L")
 
     /// Whether macOS has this shortcut turned on for itself (System Settings → Keyboard → Keyboard
     /// Shortcuts), such as ⌃Space for switching input sources. macOS gets the key first then.
@@ -141,6 +145,26 @@ public enum ShelfEdge: String, CaseIterable, Identifiable {
     public var title: String { self == .bottom ? "Bottom of screen" : "Top of screen" }
 }
 
+/// Which screen edge the notes bar sits on, and where along it.
+public enum NotesEdge: String, CaseIterable, Identifiable {
+    case right, left
+    public var id: String { rawValue }
+    public var title: String { self == .right ? "Right edge" : "Left edge" }
+}
+
+public enum NotesPlacement: String, CaseIterable, Identifiable {
+    case top, center, bottom
+    public var id: String { rawValue }
+    public var title: String { rawValue.capitalized }
+}
+
+/// The typeface notes are written in.
+public enum NotesFont: String, CaseIterable, Identifiable {
+    case system, rounded, serif, monospaced
+    public var id: String { rawValue }
+    public var title: String { self == .system ? "System" : rawValue.capitalized }
+}
+
 /// Light or dark for PasteClip's own windows, or as the system is.
 public enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
@@ -232,6 +256,30 @@ public final class AppSettings: ObservableObject {
     /// Azure region of the Microsoft Translator key; empty for a global resource.
     @Published public var microsoftRegion: String { didSet { defaults.set(microsoftRegion, forKey: "microsoftRegion") } }
 
+    // Notes
+    @Published public var notesEnabled: Bool { didSet { defaults.set(notesEnabled, forKey: "notesEnabled") } }
+    @Published public var notesEdge: NotesEdge { didSet { defaults.set(notesEdge.rawValue, forKey: "notesEdge") } }
+    @Published public var notesPlacement: NotesPlacement { didSet { defaults.set(notesPlacement.rawValue, forKey: "notesPlacement") } }
+    /// Show the bar on every screen, or only the main one.
+    @Published public var notesOnAllScreens: Bool { didSet { defaults.set(notesOnAllScreens, forKey: "notesOnAllScreens") } }
+    /// How long the pointer rests on the bar before it opens, in milliseconds.
+    @Published public var notesHoverDelay: Int { didSet { defaults.set(notesHoverDelay, forKey: "notesHoverDelay") } }
+    @Published public var notesShowInFullScreen: Bool { didSet { defaults.set(notesShowInFullScreen, forKey: "notesShowInFullScreen") } }
+    @Published public var notesFont: NotesFont { didSet { defaults.set(notesFont.rawValue, forKey: "notesFont") } }
+    @Published public var notesFontSize: Double { didSet { defaults.set(notesFontSize, forKey: "notesFontSize") } }
+    /// Style Markdown (bold, headings, lists, tasks) as it's typed; the text stays plain.
+    /// The welcome notes were added once, so deleting them doesn't bring them back.
+    public var notesWelcomeAdded: Bool {
+        get { defaults.bool(forKey: "notesWelcomeAdded") }
+        set { defaults.set(newValue, forKey: "notesWelcomeAdded") }
+    }
+    @Published public var notesMarkdown: Bool { didSet { defaults.set(notesMarkdown, forKey: "notesMarkdown") } }
+    @Published public var newNoteHotKey: KeyCombo? { didSet { store(newNoteHotKey, "newNoteHotKey") } }
+    @Published public var allNotesHotKey: KeyCombo? { didSet { store(allNotesHotKey, "allNotesHotKey") } }
+    @Published public var archivedNotesHotKey: KeyCombo? { didSet { store(archivedNotesHotKey, "archivedNotesHotKey") } }
+
+    public static let notesFontSizes = 11.0...22.0
+
     /// True while a shortcut field is listening, so global hotkeys can step aside. Not saved.
     @Published public var isRecordingShortcut = false
 
@@ -254,6 +302,18 @@ public final class AppSettings: ObservableObject {
         previousPinboardKey = Self.load(defaults, "previousPinboardKey", default: .previousPinboard)
         captureTextHotKey = Self.load(defaults, "captureTextHotKey", default: .captureText)
         floatImageKey = Self.load(defaults, "floatImageKey", default: .floatImage)
+        notesEnabled = defaults.object(forKey: "notesEnabled") as? Bool ?? true
+        notesEdge = NotesEdge(rawValue: defaults.string(forKey: "notesEdge") ?? "") ?? .right
+        notesPlacement = NotesPlacement(rawValue: defaults.string(forKey: "notesPlacement") ?? "") ?? .center
+        notesOnAllScreens = defaults.object(forKey: "notesOnAllScreens") as? Bool ?? true
+        notesHoverDelay = defaults.object(forKey: "notesHoverDelay") as? Int ?? 100
+        notesShowInFullScreen = defaults.bool(forKey: "notesShowInFullScreen")
+        notesFont = NotesFont(rawValue: defaults.string(forKey: "notesFont") ?? "") ?? .system
+        notesFontSize = defaults.object(forKey: "notesFontSize") as? Double ?? 13.5
+        notesMarkdown = defaults.object(forKey: "notesMarkdown") as? Bool ?? true
+        newNoteHotKey = Self.load(defaults, "newNoteHotKey", default: .newNote)
+        allNotesHotKey = Self.load(defaults, "allNotesHotKey", default: .allNotes)
+        archivedNotesHotKey = Self.load(defaults, "archivedNotesHotKey", default: .archivedNotes)
         screenshotHotKey = Self.load(defaults, "screenshotHotKey", default: .captureArea)
         translateScreenHotKey = Self.load(defaults, "translateScreenHotKey", default: .translateScreen)
         screenshotAction = ScreenshotAction(rawValue: defaults.string(forKey: "screenshotAction") ?? "") ?? .offer
@@ -313,6 +373,9 @@ public final class AppSettings: ObservableObject {
         screenshotHotKey = .captureArea
         translateScreenHotKey = .translateScreen
         translateHotKey = .translate
+        newNoteHotKey = .newNote
+        allNotesHotKey = .allNotes
+        archivedNotesHotKey = .archivedNotes
         quickPasteModifier = .command
         plainTextModifier = .shift
     }
