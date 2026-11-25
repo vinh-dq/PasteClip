@@ -168,6 +168,16 @@ final class FloatingImages {
         }
     }
 
+    /// A click in another app means the pointer is out there. Hover flags can miss their exit
+    /// (a popup in a browser, say) and would keep sending that app's typing to the image.
+    private func dropStaleHover() {
+        let mouse = NSEvent.mouseLocation
+        for window in windows where window.pointerOver && !window.panel.frame.contains(mouse) {
+            window.state.hovering = false
+            window.state.stripHovering = false
+        }
+    }
+
     private func watchPinches() {
         // Clicks in other apps (or on the desktop) end the image's claim on ⌘C. Clicks on the
         // images themselves never reach a global monitor.
@@ -178,6 +188,14 @@ final class FloatingImages {
         } else if clickMonitor == nil {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
                 self?.clicked = nil
+                self?.dropStaleHover()
+                // An image clicked earlier is still the key window, and a browser's popup (the
+                // download name field) doesn't take that from it: typing there would go to the image.
+                // Deactivating takes the key without touching the windows; hiding and showing
+                // them again (giveUpKey) is the fallback, and it flickers.
+                guard let windows = self?.windows, windows.contains(where: { $0.panel.isKeyWindow }) else { return }
+                NSApp.deactivate()
+                DispatchQueue.main.async { windows.forEach { $0.panel.giveUpKey() } }
             }
         }
         if windows.isEmpty {
@@ -234,7 +252,8 @@ final class FloatingImages {
             spaceHeldBy = nil
             return window.handle(ns)
         }
-        guard let window = windows.last(where: { $0.pointerOver && !$0.state.locked }),
+        let mouse = NSEvent.mouseLocation
+        guard let window = windows.last(where: { ($0.panel.frame.contains(mouse) || $0.state.stripHovering) && !$0.state.locked }),
               window.pointerArrived > keyElsewhere else {
             if ns.type == .keyDown { keyElsewhere = Date() }
             return false
@@ -450,8 +469,12 @@ final class FloatingImagePanel: NSPanel {
     func giveUpKey() {
         guard isKeyWindow else { return }
         refusesKey = true
+        // No fade, or the image would flicker as it is taken off the screen and put back.
+        let behavior = animationBehavior
+        animationBehavior = .none
         orderOut(nil)
         orderFrontRegardless()
+        animationBehavior = behavior
         refusesKey = false
     }
 

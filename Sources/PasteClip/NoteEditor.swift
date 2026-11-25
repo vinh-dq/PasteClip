@@ -16,6 +16,8 @@ final class NoteTextView: NSTextView {
     var onClose: () -> Void = {}
     var onPin: () -> Void = {}
     var settings: AppSettings?
+    private var boxTracking: NSTrackingArea?
+    private var arrowShown = false
 
     override func cancelOperation(_ sender: Any?) {
         if slashStart != nil { closeSlash() } else { onClose() }
@@ -416,6 +418,63 @@ final class NoteTextView: NSTextView {
     override func insertTab(_ sender: Any?) { shiftIndent(outdent: false) }
     override func insertBacktab(_ sender: Any?) { shiftIndent(outdent: true) }
 
+    /// The line (without its break) whose drawn task box is under `point`. Only the box itself counts:
+    /// a click on the empty rest of a task line must put the caret there, not tick it.
+    private func taskBox(at point: NSPoint) -> NSRange? {
+        guard settings?.notesMarkdown != false, let layout = layoutManager, let container = textContainer,
+              let storage = textStorage, storage.length > 0 else { return nil }
+        let origin = textContainerOrigin
+        let local = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        var fraction: CGFloat = 0
+        let index = layout.characterIndex(for: local, in: container, fractionOfDistanceBetweenInsertionPoints: &fraction)
+        let ns = string as NSString
+        guard index < ns.length else { return nil }
+        let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
+        var line = ns.substring(with: lineRange)
+        if line.hasSuffix("\n") { line.removeLast() }
+        guard NoteMarkdown.isTicked(line) != nil else { return nil }
+        let size = CGFloat(settings?.notesFontSize ?? 13.5)
+        let level = CGFloat(line.prefix { $0 == " " }.count / 2)
+        let glyph = layout.glyphIndexForCharacter(at: lineRange.location)
+        let fragment = layout.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        let left = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).minX
+            + level * NoteStyler.indentUnit(fontSize: size)
+        let hit = NSRect(x: left - 2, y: fragment.minY, width: size * 0.95 + 6, height: fragment.height)
+        guard hit.contains(local) else { return nil }
+        return NSRange(location: lineRange.location, length: (line as NSString).length)
+    }
+
+    /// The pointer is an arrow over a task's box (it clicks like a button). True when it took the event:
+    /// the text view's own handling would put the text bar back on every move.
+    private func showsBoxCursor(for event: NSEvent) -> Bool {
+        if taskBox(at: convert(event.locationInWindow, from: nil)) != nil {
+            NSCursor.arrow.set()
+            arrowShown = true
+            return true
+        }
+        if arrowShown {
+            arrowShown = false
+            NSCursor.iBeam.set()
+        }
+        return false
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let boxTracking { removeTrackingArea(boxTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        boxTracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if !showsBoxCursor(for: event) { super.mouseMoved(with: event) }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if !showsBoxCursor(for: event) { super.cursorUpdate(with: event) }
+    }
+
     /// A click on a task's box ticks it.
     override func mouseDown(with event: NSEvent) {
         closeSlash()
@@ -431,27 +490,14 @@ final class NoteTextView: NSTextView {
                 return
             }
         }
-        let point = convert(event.locationInWindow, from: nil)
-        if settings?.notesMarkdown != false, let layout = layoutManager, let container = textContainer {
-            let local = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
-            var fraction: CGFloat = 0
-            let index = layout.characterIndex(for: local, in: container, fractionOfDistanceBetweenInsertionPoints: &fraction)
-            let ns = string as NSString
-            if index < ns.length {
-                let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
-                var line = ns.substring(with: lineRange)
-                if line.hasSuffix("\n") { line.removeLast() }
-                let marker = NoteMarkdown.markerLength(of: line)
-                if NoteMarkdown.isTicked(line) != nil, index < lineRange.location + marker {
-                    let toggled = NoteMarkdown.togglingTask(line)
-                    let r = NSRange(location: lineRange.location, length: (line as NSString).length)
-                    if shouldChangeText(in: r, replacementString: toggled) {
-                        textStorage?.replaceCharacters(in: r, with: toggled)
-                        didChangeText()
-                    }
-                    return
-                }
+        if let r = taskBox(at: convert(event.locationInWindow, from: nil)) {
+            let line = (string as NSString).substring(with: r)
+            let toggled = NoteMarkdown.togglingTask(line)
+            if shouldChangeText(in: r, replacementString: toggled) {
+                textStorage?.replaceCharacters(in: r, with: toggled)
+                didChangeText()
             }
+            return
         }
         super.mouseDown(with: event)
     }
