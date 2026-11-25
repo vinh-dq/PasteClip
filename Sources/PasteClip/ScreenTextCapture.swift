@@ -128,14 +128,14 @@ final class ScreenTextCapture {
     }
 }
 
-/// Takes a screenshot of an area with the system's selection and keeps it as an image clip,
-/// copied to the clipboard.
+/// Takes a screenshot with PasteClip's own picker (an area, a scrolling region or a window; Space
+/// moves between them) and keeps it as an image clip, copied to the clipboard.
 final class ScreenshotCapture {
     private let store: ClipStore
     private let settings: AppSettings
     private let toast = Toast()
+    private let picker = ScreenPicker()
     private var running = false
-    private let area = PickedArea()
     /// Called with the new clip once it's saved and copied.
     var onCaptured: ((ClipItem) -> Void)?
 
@@ -148,24 +148,36 @@ final class ScreenshotCapture {
         guard !running else { return }
         guard ScreenTextCapture.hasAccess else { return ScreenTextCapture.askForAccess() }
         running = true
-        area.start()
-        ScreenTextCapture.pickArea { [weak self] file in
+        picker.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
+        picker.start { [weak self] shot in
             guard let self else { return }
-            self.running = false
-            self.area.stop()
-            guard let file else { return }
-            let png = try? Data(contentsOf: file)
-            try? FileManager.default.removeItem(at: file)
-            // Where it was taken, so floating it puts it back over that spot.
-            let frame = png.flatMap { NSBitmapImageRep(data: $0)?.cgImage }.flatMap(self.area.placement(of:))
-            guard let png, let item = self.store.addImage(png, source: "Screenshot", screenFrame: frame) else { return NSSound.beep() }
-            self.store.copyToPasteboard(item)
-            if self.settings.screenshotAction == .copy {
-                self.toast.sharingType = self.settings.hideDuringScreenSharing ? .none : .readOnly
-                self.toast.show("Screenshot copied", symbol: "checkmark.circle.fill")
+            guard let shot else { return self.running = false }
+            // A tall picture takes a moment to encode.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let png = Self.png(shot.image, scale: shot.scale)
+                DispatchQueue.main.async { self.save(png, shot) }
             }
-            self.onCaptured?(item)
         }
+    }
+
+    private func save(_ png: Data?, _ shot: PickedScreenshot) {
+        running = false
+        // Where it was taken, so floating it puts it back over that spot.
+        let frame = shot.frame.flatMap { FloatingImages.placement(of: shot.image, at: $0) }
+        guard let png, let item = store.addImage(png, source: "Screenshot", screenFrame: frame) else { return NSSound.beep() }
+        store.copyToPasteboard(item)
+        if settings.screenshotAction == .copy {
+            toast.sharingType = settings.hideDuringScreenSharing ? .none : .readOnly
+            toast.show("Screenshot copied", symbol: "checkmark.circle.fill")
+        }
+        onCaptured?(item)
+    }
+
+    /// A PNG that knows its size in points (144 dpi on a Retina screen), as the system's screenshots do.
+    private static func png(_ image: CGImage, scale: CGFloat) -> Data? {
+        let rep = NSBitmapImageRep(cgImage: image)
+        rep.size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        return rep.representation(using: .png, properties: [:])
     }
 }
 
