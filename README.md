@@ -118,7 +118,7 @@ Without it, PasteClip still copies the clip, and you press ⌘V yourself.
 
 ### Images and the screen
 
-- **Screenshots**: ⇧⌘1 captures an area as an image clip and copies it; a card in the corner then offers Edit (E), Float (P) and Translate (T); any other key closes it and goes on to the app you're typing in
+- **Screenshots**: ⇧⌘1 opens PasteClip's own picker: drag an area, press Space once for a **scrolling capture** (drag a region, scroll it yourself, Space to finish; the frames are joined into one tall image), Space again for a window. The result is an image clip, copied; a card in the corner then offers Edit (E), Float (P) and Translate (T); any other key closes it and goes on to the app you're typing in
 - **Mark up images**: ⌘E on an image clip opens an editor with arrows, boxes, text, highlighter, numbers, pixelate and crop, each on one key. Esc saves the result as a new clip
 - **Float images**: ⌃F keeps an image above every window. Its text can be selected (drag; double click a word, triple click a row, ⌘A all) and copied (⌘C), read the same way translation reads it, so Vietnamese, English and Japanese in one sentence copy right. Scroll up or down to make it clearer or fainter, pinch to zoom, L to let clicks pass through
 - **Copy text from the screen**: ⌥Space, pick an area, and its text is copied. English, Vietnamese, Japanese and Chinese by default; more languages in Settings → Text Recognition. Read on your Mac with Vision (needs Screen Recording permission)
@@ -167,7 +167,7 @@ shortcuts, so change any that get in the way.
 | ⌃V | Open or close the shelf |
 | ⌃⇧C | Start or stop the paste stack |
 | ⌃⇧V | Paste the next clip from the stack |
-| ⇧⌘1 | Screenshot of an area (or a window, with Space), saved as a clip and copied; a card in the corner offers Edit E, Float P, Translate T (Settings → General can instead always copy, edit or float) |
+| ⇧⌘1 | Screenshot: an area, then Space for a scrolling capture (scroll by hand, Space to finish), Space again for a window, Space again for the area; saved as a clip and copied; a card in the corner offers Edit E, Float P, Translate T (Settings → General can instead always copy, edit or float) |
 | ⇧⌘2 | Translate an area of the screen: the translation floats over it, where the text was |
 | ⌥Space | Copy text from an area of the screen |
 | ⌃F | Float the latest image (with the shelf open: the selected images) |
