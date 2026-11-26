@@ -2,6 +2,26 @@ import AppKit
 import PasteClipCore
 import SwiftUI
 
+/// Six dots in the margin beside a line: its handle for dragging. Never takes the mouse itself.
+private final class GripView: NSView {
+    var hot = false { didSet { needsDisplay = true } }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if hot {
+            NSColor.labelColor.withAlphaComponent(0.09).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+        }
+        NSColor.secondaryLabelColor.withAlphaComponent(hot ? 0.95 : 0.6).setFill()
+        for col in [-1.0, 1.0] {
+            for row in [-1.0, 0.0, 1.0] {
+                NSBezierPath(ovalIn: NSRect(x: bounds.midX + col * 2.6 - 1.05, y: bounds.midY + row * 4.2 - 1.05, width: 2.1, height: 2.1)).fill()
+            }
+        }
+    }
+}
+
 /// What the toolbar and the shortcuts ask the text of a note to do.
 enum NoteCommand {
     case bold, italic, strike, code, highlight
@@ -18,6 +38,11 @@ final class NoteTextView: NSTextView {
     var settings: AppSettings?
     private var boxTracking: NSTrackingArea?
     private var arrowShown = false
+    /// The line the pointer is on and whether it is on that line's grip; the grip shows only there.
+    private var hoverLine: Int?
+    private var overGrip = false
+    private var isReordering = false
+    private let gripView = GripView()
 
     override func cancelOperation(_ sender: Any?) {
         if slashStart != nil { closeSlash() } else { onClose() }
@@ -444,11 +469,19 @@ final class NoteTextView: NSTextView {
         return NSRange(location: lineRange.location, length: (line as NSString).length)
     }
 
-    /// The pointer is an arrow over a task's box (it clicks like a button). True when it took the event:
-    /// the text view's own handling would put the text bar back on every move.
+    /// The pointer is an arrow over a task's box (it clicks like a button) and an open hand over a grip or
+    /// a bullet (it drags). True when it took the event: the text view's own handling would put the
+    /// text bar back on every move.
     private func showsBoxCursor(for event: NSEvent) -> Bool {
-        if taskBox(at: convert(event.locationInWindow, from: nil)) != nil {
+        let point = convert(event.locationInWindow, from: nil)
+        updateHover(at: point)
+        if taskBox(at: point) != nil {
             NSCursor.arrow.set()
+            arrowShown = true
+            return true
+        }
+        if overGrip || bulletLine(at: point) != nil {
+            NSCursor.openHand.set()
             arrowShown = true
             return true
         }
@@ -462,7 +495,7 @@ final class NoteTextView: NSTextView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let boxTracking { removeTrackingArea(boxTracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area)
         boxTracking = area
     }
@@ -471,11 +504,236 @@ final class NoteTextView: NSTextView {
         if !showsBoxCursor(for: event) { super.mouseMoved(with: event) }
     }
 
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setHover(nil, grip: false)
+    }
+
     override func cursorUpdate(with event: NSEvent) {
         if !showsBoxCursor(for: event) { super.cursorUpdate(with: event) }
     }
 
-    /// A click on a task's box ticks it.
+    // MARK: Reordering lines
+
+    /// How far the pointer must travel before a press on a handle is a drag rather than a click.
+    private static let dragSlop: CGFloat = 4
+
+    private struct Lines {
+        let text: [String]
+        let starts: [Int]
+    }
+
+    private func splitLines() -> Lines {
+        let text = string.components(separatedBy: "\n")
+        var starts: [Int] = []
+        var at = 0
+        for line in text {
+            starts.append(at)
+            at += (line as NSString).length + 1
+        }
+        return Lines(text: text, starts: starts)
+    }
+
+    /// The area the line occupies, in this view's coordinates (all its wrapped rows).
+    private func lineRect(_ k: Int, _ lines: Lines) -> NSRect? {
+        guard let layout = layoutManager, let container = textContainer else { return nil }
+        let ns = string as NSString
+        let loc = lines.starts[k]
+        let len = (lines.text[k] as NSString).length
+        var rect: NSRect
+        if len == 0 {
+            if loc >= ns.length {
+                rect = layout.extraLineFragmentRect
+                if rect == .zero { return nil }
+            } else {
+                rect = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: loc), effectiveRange: nil)
+            }
+        } else {
+            let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: loc, length: len), actualCharacterRange: nil)
+            rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+        }
+        return rect.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+    }
+
+    /// The first row of the line, which is where its grip and marker sit.
+    private func firstRow(_ k: Int, _ lines: Lines) -> NSRect? {
+        guard let layout = layoutManager, lines.starts[k] < (string as NSString).length else { return nil }
+        let glyph = layout.glyphIndexForCharacter(at: lines.starts[k])
+        return layout.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+            .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+    }
+
+    /// The line under `y`, when it has something to move.
+    private func lineIndex(atY y: CGFloat, _ lines: Lines) -> Int? {
+        for k in lines.text.indices where !lines.text[k].isEmpty {
+            if let r = lineRect(k, lines), y >= r.minY, y < r.maxY { return k }
+        }
+        return nil
+    }
+
+    private func gripRect(_ k: Int, _ lines: Lines) -> NSRect? {
+        guard let row = firstRow(k, lines) else { return nil }
+        let size = CGFloat(settings?.notesFontSize ?? 13.5)
+        let fontHeight = ceil((settings?.notesBodyFont ?? NSFont.systemFont(ofSize: size)).boundingRectForFont.height)
+        let midY = row.minY + min(row.height, max(fontHeight, row.height - 3)) / 2
+        return NSRect(x: textContainerOrigin.x - 25, y: midY - 11, width: 20, height: 22)
+    }
+
+    private func updateHover(at point: NSPoint) {
+        guard !isReordering else { return }
+        let lines = splitLines()
+        let k = lineIndex(atY: point.y, lines)
+        setHover(k, grip: k.flatMap { gripRect($0, lines) }?.insetBy(dx: -3, dy: 0).contains(point) ?? false)
+    }
+
+    private func setHover(_ line: Int?, grip: Bool) {
+        guard line != hoverLine || grip != overGrip else { return }
+        hoverLine = line
+        overGrip = grip
+        placeGrip()
+    }
+
+    /// Shows the grip in the left margin of the line the pointer is on. It is a view of its own because
+    /// the text view clips its drawing to the text area, which leaves the margin out.
+    private func placeGrip() {
+        let lines = splitLines()
+        guard !isReordering, let k = hoverLine, k < lines.text.count, window?.firstResponder === self,
+              let rect = gripRect(k, lines) else { gripView.isHidden = true; return }
+        if gripView.superview == nil { addSubview(gripView) }
+        gripView.frame = rect
+        gripView.hot = overGrip
+        gripView.isHidden = false
+    }
+
+    /// The line whose bullet is under `point` (a bullet drags like a grip; a task box also ticks, see `taskBox`).
+    private func bulletLine(at point: NSPoint) -> Int? {
+        guard settings?.notesMarkdown != false else { return nil }
+        let lines = splitLines()
+        guard let k = lineIndex(atY: point.y, lines), NoteMarkdown.style(of: lines.text[k]) == .bullet,
+              let row = firstRow(k, lines), let layout = layoutManager, let container = textContainer else { return nil }
+        let size = CGFloat(settings?.notesFontSize ?? 13.5)
+        let level = CGFloat(lines.text[k].prefix { $0 == " " }.count / 2)
+        let glyph = layout.glyphIndexForCharacter(at: lines.starts[k])
+        let left = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).minX
+            + textContainerOrigin.x + level * NoteStyler.indentUnit(fontSize: size)
+        return NSRect(x: left - 2, y: row.minY, width: size * 0.95 + 6, height: row.height).contains(point) ? k : nil
+    }
+
+    /// The line a press at `point` would pick up: its grip in the margin, its bullet or its task box.
+    private func handleLine(at point: NSPoint) -> Int? {
+        let lines = splitLines()
+        if let k = lineIndex(atY: point.y, lines), let g = gripRect(k, lines), g.insetBy(dx: -3, dy: 0).contains(point) { return k }
+        if let k = bulletLine(at: point) { return k }
+        if let r = taskBox(at: point) { return lines.starts.lastIndex { $0 <= r.location } }
+        return nil
+    }
+
+    /// Holds the press on a handle: a short press is a click (it ticks a task box), a longer one lifts the
+    /// line and its sub-items as a glass chip and drops them where the accent bar is when the button goes up.
+    private func trackHandle(line: Int, event: NSEvent) {
+        let lines = splitLines()
+        let block = NoteMarkdown.block(in: lines.text, at: line)
+        guard let first = lineRect(block.lowerBound, lines), let last = lineRect(block.upperBound - 1, lines) else { return }
+        let origin = convert(event.locationInWindow, from: nil)
+        let wasBox = taskBox(at: origin)
+        let area = NSRect(x: 4, y: first.minY - 1, width: bounds.width - 8, height: last.maxY - first.minY + 2)
+        var chip: NSView?
+        var bar: NSView?
+        var slot: Int?
+        var cancelled = false
+        defer { chip?.removeFromSuperview(); bar?.removeFromSuperview(); isReordering = false; NSCursor.arrow.set() }
+
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+            if next.type == .leftMouseUp { break }
+            if next.type == .keyDown {
+                if next.keyCode == 53 { cancelled = true; break }
+                continue
+            }
+            let now = convert(next.locationInWindow, from: nil)
+            if chip == nil {
+                guard hypot(now.x - origin.x, now.y - origin.y) >= Self.dragSlop else { continue }
+                isReordering = true
+                gripView.isHidden = true
+                displayIfNeeded()
+                chip = makeChip(of: area)
+                bar = makeBar()
+                addSubview(bar!)
+                addSubview(chip!)
+            }
+            autoscroll(with: next)
+            NSCursor.closedHand.set()
+            let point = convert(next.locationInWindow, from: nil)
+            let top = min(max(area.minY + point.y - origin.y, textContainerOrigin.y - 4), bounds.height - area.height)
+            chip?.frame.origin.y = top
+            // The nearest gap between lines to the chip's middle.
+            let mid = top + area.height / 2
+            var target = lines.text.count
+            for k in lines.text.indices where !block.contains(k) {
+                if let r = lineRect(k, lines), mid < r.midY { target = k; break }
+            }
+            slot = NoteMarkdown.moving(block, toSlot: target, in: lines.text) == nil ? nil : target
+            if let slot, let bar {
+                let y = slot < lines.text.count ? (lineRect(slot, lines)?.minY ?? 0) - 1 : (lineRect(slot - 1, lines)?.maxY ?? 0) + 1
+                bar.isHidden = false
+                bar.frame = NSRect(x: textContainerOrigin.x - 6, y: y - 1.25, width: bounds.width - textContainerOrigin.x - 8, height: 2.5)
+            } else {
+                bar?.isHidden = true
+            }
+        }
+
+        if chip == nil, !cancelled {
+            // A click: a task's box ticks, anywhere else puts the caret on the line.
+            if let r = wasBox {
+                let toggled = NoteMarkdown.togglingTask((string as NSString).substring(with: r))
+                if shouldChangeText(in: r, replacementString: toggled) {
+                    textStorage?.replaceCharacters(in: r, with: toggled)
+                    didChangeText()
+                }
+            } else {
+                setSelectedRange(NSRange(location: lines.starts[line] + (lines.text[line] as NSString).length, length: 0))
+            }
+            return
+        }
+        guard !cancelled, let slot, let moved = NoteMarkdown.moving(block, toSlot: slot, in: lines.text) else { return }
+        let newFirst = slot > block.upperBound ? slot - block.count : slot
+        let caret = moved.prefix(newFirst).reduce(0) { $0 + ($1 as NSString).length + 1 } + (moved[newFirst] as NSString).length
+        replaceAll(with: moved.joined(separator: "\n"), selecting: NSRange(location: caret, length: 0))
+    }
+
+    /// The lifted line: a picture of its rows on a see-through card with a soft shadow.
+    private func makeChip(of area: NSRect) -> NSView {
+        let view = NSView(frame: area)
+        view.wantsLayer = true
+        if let rep = bitmapImageRepForCachingDisplay(in: area) {
+            cacheDisplay(in: area, to: rep)
+            view.layer?.contents = rep.cgImage
+        }
+        view.layer?.contentsGravity = .resize
+        view.layer?.cornerRadius = 10
+        view.layer?.cornerCurve = .continuous
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.78).cgColor
+        view.layer?.shadowColor = NSColor.black.cgColor
+        view.layer?.shadowOpacity = 0.22
+        view.layer?.shadowRadius = 12
+        view.layer?.shadowOffset = CGSize(width: 0, height: -5)
+        return view
+    }
+
+    /// The accent bar that shows where the line will land.
+    private func makeBar() -> NSView {
+        let view = NSView(frame: .zero)
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        view.layer?.cornerRadius = 1.25
+        view.layer?.shadowColor = NSColor.controlAccentColor.cgColor
+        view.layer?.shadowOpacity = 0.45
+        view.layer?.shadowRadius = 3
+        view.layer?.shadowOffset = .zero
+        view.isHidden = true
+        return view
+    }
+
+    /// A press on a grip, a bullet or a task's box picks the line up; a click on a box still ticks it.
     override func mouseDown(with event: NSEvent) {
         closeSlash()
         hideSelectionBar()
@@ -490,13 +748,8 @@ final class NoteTextView: NSTextView {
                 return
             }
         }
-        if let r = taskBox(at: convert(event.locationInWindow, from: nil)) {
-            let line = (string as NSString).substring(with: r)
-            let toggled = NoteMarkdown.togglingTask(line)
-            if shouldChangeText(in: r, replacementString: toggled) {
-                textStorage?.replaceCharacters(in: r, with: toggled)
-                didChangeText()
-            }
+        if let k = handleLine(at: convert(event.locationInWindow, from: nil)) {
+            trackHandle(line: k, event: event)
             return
         }
         super.mouseDown(with: event)
@@ -537,7 +790,7 @@ struct NoteTextEditor: NSViewRepresentable {
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticLinkDetectionEnabled = false
-        view.textContainerInset = NSSize(width: 14, height: 8)
+        view.textContainerInset = NSSize(width: 26, height: 8)
         view.insertionPointColor = .controlAccentColor
         view.linkTextAttributes = [.foregroundColor: NSColor.controlAccentColor, .underlineStyle: NSUnderlineStyle.single.rawValue,
                                    .cursor: NSCursor.pointingHand]

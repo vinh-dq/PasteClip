@@ -117,3 +117,18 @@ import Testing
     #expect(store.active.first?.title == "Welcome to Notes")
     #expect(store.active.map(\.title).allSatisfy { $0 != "New Note" && $0.count < 28 })
 }
+
+@Test func noteLineBlockBringsItsSubItems() {
+    let lines = ["- a", "  - a1", "  - a2", "- b", "plain"]
+    #expect(NoteMarkdown.block(in: lines, at: 0) == 0..<3)
+    #expect(NoteMarkdown.block(in: lines, at: 1) == 1..<2)
+    #expect(NoteMarkdown.block(in: lines, at: 4) == 4..<5)
+}
+
+@Test func noteMovingABlockKeepsEveryLine() {
+    let lines = ["- a", "  - a1", "- b", "- c"]
+    #expect(NoteMarkdown.moving(0..<2, toSlot: 4, in: lines) == ["- b", "- c", "- a", "  - a1"])
+    #expect(NoteMarkdown.moving(3..<4, toSlot: 0, in: lines) == ["- c", "- a", "  - a1", "- b"])
+    #expect(NoteMarkdown.moving(2..<3, toSlot: 2, in: lines) == nil)
+    #expect(NoteMarkdown.moving(2..<3, toSlot: 3, in: lines) == nil)
+}

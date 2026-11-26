@@ -130,6 +130,29 @@ public enum NoteMarkdown {
         return (out, NSRange(location: range.location + m, length: range.length))
     }
 
+    /// The lines moved together with line `index`: the line and the deeper-indented lines under it,
+    /// so a list item brings its sub-items along.
+    public static func block(in lines: [String], at index: Int) -> Range<Int> {
+        guard lines.indices.contains(index) else { return index..<index }
+        func indent(_ l: String) -> Int { l.prefix { $0 == " " }.count }
+        let base = indent(lines[index])
+        var end = index + 1
+        while end < lines.count, !lines[end].trimmingCharacters(in: .whitespaces).isEmpty, indent(lines[end]) > base { end += 1 }
+        return index..<end
+    }
+
+    /// The lines with `block` moved so it sits before line `slot` (a slot of `lines.count` is the end).
+    /// Nil when that leaves the order as it was.
+    public static func moving(_ block: Range<Int>, toSlot slot: Int, in lines: [String]) -> [String]? {
+        guard block.lowerBound >= 0, block.upperBound <= lines.count, slot >= 0, slot <= lines.count,
+              slot < block.lowerBound || slot > block.upperBound else { return nil }
+        var out = lines
+        let moved = Array(out[block])
+        out.removeSubrange(block)
+        out.insert(contentsOf: moved, at: slot > block.upperBound ? slot - moved.count : slot)
+        return out
+    }
+
     /// A note as a Markdown file's contents.
     public static func exportText(_ note: Note) -> String { note.text }
 }
