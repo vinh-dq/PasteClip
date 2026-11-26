@@ -52,7 +52,7 @@ struct NoteIconButton: View {
 /// The editor of one note: text, a slim toolbar, colours and the actions at the foot.
 struct NoteEditorView: View {
     static let cornerRadius: CGFloat = 24
-    static let size = NSSize(width: 372, height: 430)
+    static let size = NSSize(width: 409, height: 430)
     @ObservedObject var store: NoteStore
     @ObservedObject var settings: AppSettings
     let id: UUID
